@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#185b45" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f7f5" />
+    <meta name="color-scheme" content="light" />
     <meta name="description" content="Compras familiares con inventario, alertas de sobrecompra, factura y presupuesto real." />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -12,13 +12,14 @@
     <meta name="apple-mobile-web-app-title" content="Compras" />
     <title>Compras familiares</title>
 
-    <link rel="manifest" href="./manifest.webmanifest?v=2.1.2" />
+    <link rel="manifest" href="./manifest.webmanifest?v=3.0.1" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
-    <link rel="stylesheet" href="./styles.css?v=2.1.2" />
-    <script src="./data.js?v=2.1.2" defer></script>
-    <script src="./receipt-db.js?v=2.1.2" defer></script>
-    <script src="./app.js?v=2.1.2" defer></script>
+    <link rel="stylesheet" href="./styles.css?v=3.0.1" />
+    <script src="./data.js?v=3.0.1" defer></script>
+    <script src="./catalog-supermaxi.js?v=3.0.1" defer></script>
+    <script src="./receipt-db.js?v=3.0.1" defer></script>
+    <script src="./app.js?v=3.0.1" defer></script>
   </head>
 
   <body>
@@ -63,6 +64,11 @@
               <div><span class="stat-dot total" aria-hidden="true"></span><strong id="summary-total">0</strong><span>En el plan</span></div>
             </div>
           </section>
+
+          <div class="catalog-banner" role="note">
+            <span class="status-badge">Wayra</span>
+            <p><strong>Presentaciones estándar para comprar en Wayra.</strong> Las opciones con fecha tienen precio oficial verificado; las demás se completan con la factura.</p>
+          </div>
 
           <section class="shopping-tools" aria-labelledby="tools-heading">
             <h3 class="sr-only" id="tools-heading">Buscar y filtrar</h3>
@@ -117,7 +123,7 @@
         <section class="view" id="view-replenishment" data-view="replenishment" aria-labelledby="replenishment-heading" hidden>
           <header class="view-header">
             <p class="section-kicker">Inventario estimado</p>
-            <h2 id="replenishment-heading">Próximas reposiciones</h2>
+            <h2 id="replenishment-heading">Tu despensa</h2>
             <p>Fechas calculadas según la cantidad comprada y el consumo familiar recomendado.</p>
           </header>
 
@@ -139,8 +145,8 @@
         <section class="view" id="view-invoice" data-view="invoice" aria-labelledby="invoice-heading" hidden>
           <header class="view-header">
             <p class="section-kicker">Gasto real</p>
-            <h2 id="invoice-heading">Factura y presupuesto</h2>
-            <p>Revisa solo lo que compraste. Los cambios se guardan automáticamente.</p>
+            <h2 id="invoice-heading">Factura e historial</h2>
+            <p>Corrige la factura, finaliza la compra y conserva cada fecha, cantidad y precio.</p>
           </header>
 
           <div class="budget-summary" aria-label="Resumen de factura y presupuesto">
@@ -190,6 +196,20 @@
               <button class="primary-button" type="button" data-view-target="shopping">Ir a comprar</button>
             </div>
           </section>
+
+          <section class="finish-purchase-card" aria-labelledby="finish-purchase-heading">
+            <h3 id="finish-purchase-heading">¿Terminaste la compra?</h3>
+            <p>Guarda una copia completa con la fecha, presentaciones, cantidades y precios. Luego se preparará el siguiente ciclo.</p>
+            <button class="primary-button" id="finish-purchase-button" type="button">Finalizar y guardar compra</button>
+          </section>
+
+          <section aria-labelledby="history-heading">
+            <div class="invoice-section-heading">
+              <div><p class="section-kicker">Guardado en este teléfono</p><h3 id="history-heading">Compras anteriores</h3></div>
+            </div>
+            <div class="history-list" id="history-list"></div>
+            <div class="history-empty" id="history-empty">Aún no has finalizado ninguna compra.</div>
+          </section>
         </section>
 
         <section class="view" id="view-settings" data-view="settings" aria-labelledby="settings-heading" hidden>
@@ -235,7 +255,7 @@
             <div class="settings-actions">
               <button class="secondary-button" id="export-button" type="button">Exportar respaldo</button>
               <button class="secondary-button" id="import-button" type="button">Importar respaldo</button>
-              <button class="primary-button" id="new-cycle-button" type="button">Iniciar nuevo ciclo</button>
+              <button class="primary-button" id="new-cycle-button" type="button">Finalizar compra actual</button>
             </div>
           </section>
 
@@ -245,7 +265,7 @@
             <button class="danger-button" id="reset-app-button" type="button">Borrar datos de este dispositivo</button>
           </section>
 
-          <p class="app-version">Compras familiares <span id="app-version">v1.0</span></p>
+          <p class="app-version">Compras familiares <span id="app-version">v3.0.1</span></p>
         </section>
       </main>
 
@@ -258,11 +278,11 @@
         </button>
         <button class="nav-item" type="button" data-view-target="replenishment">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9" /><path d="M12 7v6l4 2M17 3h4v4" /></svg>
-          <span>Reposición</span>
+          <span>Despensa</span>
         </button>
         <button class="nav-item" type="button" data-view-target="invoice">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>
-          <span>Factura</span>
+          <span>Historial</span>
         </button>
         <button class="nav-item" type="button" data-view-target="settings">
           <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19 13.5v-3l-2-.7a7 7 0 0 0-.7-1.7l.9-1.9-2.1-2.1-1.9.9a7 7 0 0 0-1.7-.7L10.5 2h-3l-.7 2.3a7 7 0 0 0-1.7.7l-1.9-.9-2.1 2.1.9 1.9a7 7 0 0 0-.7 1.7L-1 10.5v3l2.3.7a7 7 0 0 0 .7 1.7l-.9 1.9 2.1 2.1 1.9-.9a7 7 0 0 0 1.7.7l.7 2.3h3l.7-2.3a7 7 0 0 0 1.7-.7l1.9.9 2.1-2.1-.9-1.9a7 7 0 0 0 .7-1.7z" transform="translate(3) scale(.75)" /></svg>
@@ -292,14 +312,29 @@
             <span class="product-duration"><span class="duration-icon" aria-hidden="true">◷</span><span class="duration-label">Sin compra registrada</span></span>
           </button>
         </div>
+        <div class="presentation-block">
+          <label>Presentación<select class="presentation-select" aria-label="Presentación comercial"></select></label>
+          <div class="presentation-meta">
+            <span class="presentation-recommendation"></span>
+            <span class="catalog-source"></span>
+          </div>
+          <div class="pack-purchase-row">
+            <div class="pack-stepper" aria-label="Cantidad de presentaciones">
+              <button class="pack-decrease" type="button" aria-label="Disminuir cantidad">−</button>
+              <input class="pack-count" type="number" inputmode="decimal" min="0" step="any" aria-label="Cantidad" />
+              <button class="pack-increase" type="button" aria-label="Aumentar cantidad">+</button>
+            </div>
+            <div class="pack-summary"><strong></strong><span></span></div>
+          </div>
+        </div>
         <div class="quick-actions">
-          <button class="buy-button fill-recommended-button" type="button" aria-pressed="false">✓ Compré</button>
+          <button class="buy-button fill-recommended-button" type="button" aria-pressed="false">Comprado</button>
           <button class="onhand-button" type="button" aria-pressed="false">⌂ Aún lo tengo</button>
           <button class="skip-button" type="button" aria-pressed="false">No comprar</button>
         </div>
         <div class="product-status" aria-live="polite"></div>
         <details class="quantity-details">
-          <summary>Cambiar cantidad</summary>
+          <summary>Ajustar cantidad exacta</summary>
           <div class="quantity-row">
             <span>Compré exactamente</span>
             <div class="stepper">
@@ -383,9 +418,9 @@
     <dialog class="app-dialog" id="new-cycle-dialog" aria-labelledby="new-cycle-title">
       <form method="dialog">
         <div class="dialog-handle" aria-hidden="true"></div>
-        <header class="dialog-header"><div><p class="section-kicker">Nueva compra</p><h2 id="new-cycle-title">¿Iniciar un nuevo ciclo?</h2></div><button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button></header>
-        <div class="dialog-body"><p>Se cerrará la factura actual y lo que todavía alcance se conservará como inventario “Aún lo tengo”.</p><label>Fecha de inicio<input id="new-cycle-date" type="date" /></label></div>
-        <footer class="dialog-actions"><button class="secondary-button" type="button" data-dialog-close>Cancelar</button><button class="primary-button" id="confirm-new-cycle-button" type="button">Iniciar ciclo</button></footer>
+        <header class="dialog-header"><div><p class="section-kicker">Cerrar compra</p><h2 id="new-cycle-title">¿Guardar y finalizar?</h2></div><button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button></header>
+        <div class="dialog-body"><p>Se guardará esta compra con todas sus líneas. Lo que todavía alcance quedará como inventario “Aún lo tengo”.</p><label>Fecha de compra<input id="new-cycle-date" type="date" /></label></div>
+        <footer class="dialog-actions"><button class="secondary-button" type="button" data-dialog-close>Cancelar</button><button class="primary-button" id="confirm-new-cycle-button" type="button">Guardar y finalizar</button></footer>
       </form>
     </dialog>
 

@@ -1,9 +1,10 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.1.2";
+  const APP_VERSION = "3.0.1";
   const STORAGE_KEY = "shoppingPlanner:v1";
-  const SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 3;
+  const CATALOG = window.SUPERMAXI_CATALOG || { store: { id: 741, name: "Megamaxi Wayra" }, products: {} };
 
   const CATEGORY_META = {
     despensa: { label: "Despensa", icon: "<svg viewBox='0 0 24 24'><path d='M4 9h16v11H4zM7 9V5h10v4M8 13h8'/></svg>" },
@@ -101,6 +102,47 @@
     return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
   }
 
+  function catalogProduct(item) {
+    return CATALOG.products?.[item.id] || { defaultPresentationId: "", presentations: [] };
+  }
+
+  function presentationsFor(item) {
+    return Array.isArray(catalogProduct(item).presentations) ? catalogProduct(item).presentations : [];
+  }
+
+  function defaultPresentationIdFor(item) {
+    const product = catalogProduct(item);
+    return product.defaultPresentationId || product.presentations?.[0]?.id || "";
+  }
+
+  function selectedPresentation(item) {
+    const presentations = presentationsFor(item);
+    return presentations.find((entry) => entry.id === item.selectedPresentationId)
+      || presentations.find((entry) => entry.id === defaultPresentationIdFor(item))
+      || presentations[0]
+      || null;
+  }
+
+  function effectivePresentationPrice(presentation) {
+    if (!presentation) return null;
+    const offerEnd = parseLocalDate(presentation.offerEndsAt || "");
+    const today = parseLocalDate(todayISO());
+    const offerActive = presentation.offerPrice != null && (!offerEnd || !today || offerEnd >= today);
+    const value = offerActive
+      ? presentation.offerPrice
+      : presentation.affiliatePrice ?? presentation.price ?? presentation.regularPrice;
+    return value == null || !Number.isFinite(Number(value)) ? null : Math.max(0, Number(value));
+  }
+
+  function presentationBaseQuantity(item, presentation) {
+    if (!presentation) return null;
+    let converted = convertQuantity(presentation.packQty, presentation.packUnit, item.unit);
+    if (converted == null && presentation.planningEquivalentQty != null && presentation.planningEquivalentUnit) {
+      converted = convertQuantity(presentation.planningEquivalentQty, presentation.planningEquivalentUnit, item.unit);
+    }
+    return converted == null ? null : Math.max(0, Number(converted));
+  }
+
   function createInitialState() {
     const cycleId = createCycleId();
     return {
@@ -122,6 +164,14 @@
         receiptReviewed: false,
         lastUnitPrice: null,
         lastPriceDate: "",
+        lastPaidUnitPrice: null,
+        lastPaidDate: "",
+        selectedPresentationId: defaultPresentationIdFor(item),
+        selectedPackCount: null,
+        packCountPurchased: 0,
+        catalogLineTotal: null,
+        priceSource: "",
+        priceCapturedAt: "",
       })),
       settings: {
         defaultCadence: "fortnightly",
@@ -133,7 +183,7 @@
       currentReceipt: {
         cycleId,
         date: todayISO(),
-        store: "",
+        store: CATALOG.store?.name || "Megamaxi Wayra",
         invoiceNumber: "",
         reportedTotal: null,
         reviewedAt: null,
@@ -181,6 +231,34 @@
         ? null
         : Math.max(0, Number(stored.lastUnitPrice));
       merged.lastPriceDate = typeof stored.lastPriceDate === "string" ? stored.lastPriceDate : "";
+      merged.lastPaidUnitPrice = stored.lastPaidUnitPrice == null || !Number.isFinite(Number(stored.lastPaidUnitPrice))
+        ? merged.lastUnitPrice
+        : Math.max(0, Number(stored.lastPaidUnitPrice));
+      merged.lastPaidDate = typeof stored.lastPaidDate === "string" && stored.lastPaidDate
+        ? stored.lastPaidDate
+        : merged.lastPriceDate;
+      const presentationIds = presentationsFor(base).map((entry) => entry.id);
+      merged.selectedPresentationId = presentationIds.includes(stored.selectedPresentationId)
+        ? stored.selectedPresentationId
+        : defaultPresentationIdFor(base);
+      merged.selectedPackCount = stored.selectedPackCount == null || !Number.isFinite(Number(stored.selectedPackCount))
+        ? null
+        : Math.max(0, Number(stored.selectedPackCount));
+      merged.packCountPurchased = stored.packCountPurchased == null || !Number.isFinite(Number(stored.packCountPurchased))
+        ? 0
+        : Math.max(0, Number(stored.packCountPurchased));
+      merged.catalogLineTotal = stored.catalogLineTotal == null || !Number.isFinite(Number(stored.catalogLineTotal))
+        ? null
+        : Math.max(0, Number(stored.catalogLineTotal));
+      merged.priceSource = ["catalog", "receipt", "manual"].includes(stored.priceSource) ? stored.priceSource : "";
+      merged.priceCapturedAt = typeof stored.priceCapturedAt === "string" ? stored.priceCapturedAt : "";
+      if (merged.quantityPurchased > 0 && merged.packCountPurchased <= 0) {
+        const purchasedBase = convertQuantity(merged.quantityPurchased, merged.actualUnit, merged.unit) || 0;
+        const perPresentation = presentationBaseQuantity(merged, selectedPresentation(merged));
+        merged.packCountPurchased = perPresentation ? Number((purchasedBase / perPresentation).toFixed(2)) : 0;
+        merged.selectedPackCount = merged.packCountPurchased || merged.selectedPackCount;
+      }
+      if (!merged.priceSource && merged.actualLineTotal != null) merged.priceSource = "receipt";
       if (merged.purchaseStatus === "onhand" && merged.stockState !== "have") merged.stockState = "have";
       return merged;
     });
@@ -190,7 +268,9 @@
       cycleId: settings.cycleId,
     };
     currentReceipt.date = typeof currentReceipt.date === "string" ? currentReceipt.date : todayISO();
-    currentReceipt.store = typeof currentReceipt.store === "string" ? currentReceipt.store : "";
+    currentReceipt.store = typeof currentReceipt.store === "string" && currentReceipt.store.trim()
+      ? currentReceipt.store
+      : (CATALOG.store?.name || "Megamaxi Wayra");
     currentReceipt.invoiceNumber = typeof currentReceipt.invoiceNumber === "string" ? currentReceipt.invoiceNumber : "";
     currentReceipt.reportedTotal = currentReceipt.reportedTotal == null || currentReceipt.reportedTotal === ""
       ? null
@@ -203,7 +283,14 @@
       items,
       settings,
       currentReceipt,
-      history: Array.isArray(raw.history) ? raw.history.slice(-12) : [],
+      history: Array.isArray(raw.history)
+        ? raw.history.slice(-36).map((entry) => ({
+          ...entry,
+          purchaseDate: entry.purchaseDate || entry.receiptDate || entry.cycleStart || "",
+          lineItems: Array.isArray(entry.lineItems) ? entry.lineItems : [],
+          legacy: !Array.isArray(entry.lineItems),
+        }))
+        : [],
     };
   }
 
@@ -262,8 +349,11 @@
   function refreshLastUnitPrice(item) {
     const purchased = normalizedPurchased(item);
     if (purchased <= 0 || item.actualLineTotal == null) return;
-    item.lastUnitPrice = Number(item.actualLineTotal) / purchased;
-    item.lastPriceDate = state.currentReceipt?.date || item.purchaseDate || todayISO();
+    if (item.priceSource === "catalog" && !item.receiptReviewed) return;
+    item.lastPaidUnitPrice = Number(item.actualLineTotal) / purchased;
+    item.lastPaidDate = state.currentReceipt?.date || item.purchaseDate || todayISO();
+    item.lastUnitPrice = item.lastPaidUnitPrice;
+    item.lastPriceDate = item.lastPaidDate;
   }
 
   function normalizedStock(item) {
@@ -315,6 +405,69 @@
     return isDiscreteUnit(item.unit) ? Math.ceil(needed) : needed;
   }
 
+  function recommendedPresentationCount(item, presentation = selectedPresentation(item)) {
+    const recommended = recommendedForCurrentPlan(item);
+    const perPresentation = presentationBaseQuantity(item, presentation);
+    if (recommended == null || perPresentation == null || perPresentation <= 0) return 1;
+    if (recommended <= 0) return 0;
+    if (presentation?.variableWeight) return Number(Math.max(0, recommended / perPresentation).toFixed(2));
+    return Math.max(1, Math.ceil((recommended - 1e-9) / perPresentation));
+  }
+
+  function selectedPackCount(item, presentation = selectedPresentation(item)) {
+    if (item.purchaseCycleId === state.settings.cycleId && Number(item.packCountPurchased) > 0) {
+      return Number(item.packCountPurchased);
+    }
+    if (item.selectedPackCount != null && Number.isFinite(Number(item.selectedPackCount))) {
+      return Math.max(0, Number(item.selectedPackCount));
+    }
+    return recommendedPresentationCount(item, presentation);
+  }
+
+  function packStep(presentation) {
+    return presentation?.variableWeight ? 0.5 : 1;
+  }
+
+  function presentationPurchaseSummary(item, presentation = selectedPresentation(item), packCount = selectedPackCount(item, presentation)) {
+    const basePerPresentation = presentationBaseQuantity(item, presentation);
+    const quantity = basePerPresentation == null ? 0 : basePerPresentation * Number(packCount || 0);
+    const price = effectivePresentationPrice(presentation);
+    const lineTotal = price == null ? null : price * Number(packCount || 0);
+    return { quantity, lineTotal, price, packCount: Number(packCount || 0), basePerPresentation };
+  }
+
+  function applyPresentationPurchase(item, packCount, { markPurchased = true } = {}) {
+    const presentation = selectedPresentation(item);
+    const count = Math.max(0, Number(packCount) || 0);
+    item.selectedPackCount = count;
+    if (!markPurchased) return;
+    const summary = presentationPurchaseSummary(item, presentation, count);
+    item.packCountPurchased = count;
+    item.quantityPurchased = Number(summary.quantity.toFixed(3));
+    item.actualUnit = item.unit;
+    item.purchaseDate = count > 0 ? (item.purchaseDate || todayISO()) : "";
+    item.purchaseCycleId = count > 0 ? state.settings.cycleId : "";
+    item.catalogLineTotal = summary.lineTotal == null ? null : Number(summary.lineTotal.toFixed(2));
+    item.actualLineTotal = item.catalogLineTotal;
+    item.priceSource = summary.lineTotal == null ? "" : "catalog";
+    item.priceCapturedAt = presentation?.capturedAt || "";
+    item.receiptReviewed = false;
+    item.purchaseStatus = item.purchaseStatus === "skipped" ? "skipped" : statusFromQuantity(item);
+  }
+
+  function clearCurrentPurchase(item) {
+    item.quantityPurchased = 0;
+    item.packCountPurchased = 0;
+    item.actualUnit = item.unit;
+    item.purchaseDate = "";
+    item.purchaseCycleId = "";
+    item.actualLineTotal = null;
+    item.catalogLineTotal = null;
+    item.priceSource = "";
+    item.priceCapturedAt = "";
+    item.receiptReviewed = false;
+  }
+
   function availableQuantity(item) {
     return normalizedStock(item) + normalizedPurchased(item);
   }
@@ -342,9 +495,18 @@
         : { level: "none", message: "", needed: null, excess: null };
     }
     const available = stock + purchased;
-    const allowed = isBatchItem(item) || isDiscreteUnit(item.unit)
+    let allowed = isBatchItem(item) || isDiscreteUnit(item.unit)
       ? stock + Number(needed || 0)
       : target;
+    const presentation = selectedPresentation(item);
+    if (presentation && !presentation.variableWeight) {
+      const perPresentation = presentationBaseQuantity(item, presentation);
+      if (perPresentation > 0) {
+        const packagedTarget = stock + recommendedPresentationCount(item, presentation) * perPresentation;
+        const reasonablePackageLimit = stock + Math.max(Number(needed || 0) * 2, Number(needed || 0) + quantityTolerance(item, target));
+        if (packagedTarget <= reasonablePackageLimit + 1e-9) allowed = Math.max(allowed, packagedTarget);
+      }
+    }
     const excess = Math.max(0, available - allowed);
     const tolerance = quantityTolerance(item, target);
     if (excess > tolerance) {
@@ -352,8 +514,8 @@
       const coverage = dailyConsumption(item) ? available / dailyConsumption(item) : null;
       const preservation = Number(item.shelfLifeDays || 0);
       const message = perishable
-        ? `Puede desperdiciarse: tienes ${formatQuantity(available, item.unit)} y para ${safeDaysForPlan(item)} días conviene ${formatQuantity(target, item.unit)}. Evita ${formatQuantity(excess, item.unit)} extra.`
-        : `Compraste más de lo planificado. Alcanzaría aproximadamente ${formatNumber(coverage, 0)} días.`;
+        ? `Puede desperdiciarse: la cantidad elegida suma ${formatQuantity(available, item.unit)} y para ${safeDaysForPlan(item)} días conviene ${formatQuantity(target, item.unit)}. Evita ${formatQuantity(excess, item.unit)} extra.`
+        : `La cantidad elegida supera lo planificado. Alcanzaría aproximadamente ${formatNumber(coverage, 0)} días.`;
       return { level: perishable ? "danger" : "warning", message, needed, excess, coverage, preservation };
     }
     if (needed <= 0 && purchased <= 0 && stock > 0) {
@@ -373,7 +535,9 @@
       };
     }
     if (purchased > 0 || stock > 0) {
-      return { level: "safe", message: `Cantidad adecuada para aproximadamente ${safeDaysForPlan(item)} días.`, needed, excess: 0 };
+      const coverage = dailyConsumption(item) ? available / dailyConsumption(item) : safeDaysForPlan(item);
+      const usableCoverage = Number(item.shelfLifeDays || 0) > 0 ? Math.min(coverage, Number(item.shelfLifeDays)) : coverage;
+      return { level: "safe", message: `Cantidad adecuada para aproximadamente ${formatNumber(usableCoverage, 0)} días.`, needed, excess: 0 };
     }
     return { level: "none", message: "", needed, excess: 0 };
   }
@@ -540,11 +704,72 @@
       durationLabel.textContent = item.monthlyQty == null ? "Falta definir la recomendación" : "Sin compra registrada";
     }
 
+    const presentation = selectedPresentation(item);
+    const presentationSelect = $(".presentation-select", card);
+    presentationsFor(item).forEach((entry) => {
+      const option = document.createElement("option");
+      const price = effectivePresentationPrice(entry);
+      option.value = entry.id;
+      option.textContent = `${entry.label}${price == null ? " · precio pendiente" : ` · ${formatMoney(price)}`}`;
+      presentationSelect.append(option);
+    });
+    if (presentation) presentationSelect.value = presentation.id;
+    presentationSelect.addEventListener("change", () => updatePresentation(item.id, presentationSelect.value));
+
+    const packCount = selectedPackCount(item, presentation);
+    const packInput = $(".pack-count", card);
+    packInput.value = String(Number(Number(packCount).toFixed(2)));
+    packInput.step = presentation?.variableWeight ? "any" : "1";
+    const commitPackCount = () => updatePackCount(item.id, packInput.value);
+    packInput.addEventListener("change", commitPackCount);
+    packInput.addEventListener("blur", commitPackCount);
+    packInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      commitPackCount();
+    });
+    $(".pack-decrease", card).addEventListener("click", () => stepPackCount(item.id, -1));
+    $(".pack-increase", card).addEventListener("click", () => stepPackCount(item.id, 1));
+
+    const recommendationCount = recommendedPresentationCount(item, presentation);
+    const recommendationSummary = presentationPurchaseSummary(item, presentation, recommendationCount);
+    $(".presentation-recommendation", card).textContent = presentation?.variableWeight
+      ? `Sugerido ahora: ${formatQuantity(recommendationSummary.quantity, item.unit)}`
+      : `Sugerido: ${formatNumber(recommendationCount)} ${recommendationCount === 1 ? "presentación" : "presentaciones"} · ${formatQuantity(recommendationSummary.quantity, item.unit)}`;
+    const source = $(".catalog-source", card);
+    const presentationPrice = effectivePresentationPrice(presentation);
+    if (presentation?.priceStatus === "verified" && presentationPrice != null) {
+      const capturedDate = parseLocalDate(String(presentation.capturedAt || "").slice(0, 10));
+      const offerEnd = parseLocalDate(presentation.offerEndsAt || "");
+      const today = parseLocalDate(todayISO());
+      const offerActive = presentation.offerPrice != null && (!offerEnd || !today || offerEnd >= today);
+      const priceDetail = offerActive
+        ? `Oferta${offerEnd ? ` hasta ${dateFormatter.format(offerEnd)}` : ""}`
+        : presentation.offerPrice != null && offerEnd
+          ? `Oferta vencida · afiliado ${formatMoney(presentationPrice)}`
+        : presentation.regularPrice != null && Number(presentation.regularPrice) !== presentationPrice
+          ? `Afiliado ${formatMoney(presentationPrice)} · regular ${formatMoney(presentation.regularPrice)}`
+          : "Precio con IVA";
+      source.textContent = `Wayra verificado${capturedDate ? ` · ${dateFormatter.format(capturedDate)}` : ""} · ${priceDetail}`;
+      source.classList.add("is-verified");
+    } else {
+      source.textContent = "Presentación estándar · precio por confirmar";
+    }
+    const purchaseSummary = presentationPurchaseSummary(item, presentation, packCount);
+    $(".pack-summary strong", card).textContent = `Cantidad: ${formatQuantity(purchaseSummary.quantity, item.unit)}`;
+    $(".pack-summary span", card).textContent = purchaseSummary.lineTotal != null
+      ? `Total catálogo: ${formatMoney(purchaseSummary.lineTotal)}`
+      : item.lastPaidUnitPrice != null
+        ? `Presupuesto según último pago: ${formatMoney(item.lastPaidUnitPrice * purchaseSummary.quantity)}`
+        : "El precio se completa al revisar la factura";
+
     $(".product-open", card).addEventListener("click", () => openProductDialog(item.id));
 
     const buyButton = $(".buy-button", card);
     const hasPurchase = normalizedPurchased(item) > 0;
-    buyButton.textContent = hasPurchase ? item.purchaseStatus === "partial" ? "✓ Compra parcial" : "✓ Comprado" : "✓ Compré";
+    buyButton.textContent = hasPurchase
+      ? `${item.purchaseStatus === "partial" ? "✓ Compra parcial" : "✓ Comprado"}${item.actualLineTotal != null ? ` · ${formatMoney(item.actualLineTotal)}` : ""}`
+      : `Comprado${purchaseSummary.lineTotal != null ? ` · ${formatMoney(purchaseSummary.lineTotal)}` : ""}`;
     buyButton.setAttribute("aria-pressed", String(hasPurchase));
     buyButton.setAttribute("aria-label", hasPurchase ? `Desmarcar compra de ${item.name}` : `Marcar ${item.name} como comprado`);
     buyButton.addEventListener("click", () => togglePurchased(item.id));
@@ -588,7 +813,12 @@
     $(".quantity-increase", card).addEventListener("click", () => stepQuantity(item.id, 1));
 
     const status = $(".product-status", card);
-    const advice = calculatePurchaseAdvice(item);
+    const plannedWasEdited = item.selectedPackCount != null
+      && Math.abs(Number(item.selectedPackCount) - recommendationCount) > 1e-9;
+    const adviceItem = hasPurchase || !plannedWasEdited || packCount <= 0
+      ? item
+      : { ...item, quantityPurchased: purchaseSummary.quantity, actualUnit: item.unit };
+    const advice = calculatePurchaseAdvice(adviceItem);
     if (item.purchaseStatus === "skipped") {
       status.textContent = "Excluido de esta compra. Puedes reactivarlo desde los detalles.";
       status.classList.add("warning");
@@ -708,11 +938,18 @@
       if (item.purchaseStatus === "skipped") return;
       const quantity = recommendedForCurrentPlan(item);
       if (quantity == null || quantity <= 0) return;
-      if (item.lastUnitPrice == null) {
+      let unitPrice = item.lastPaidUnitPrice;
+      if (unitPrice == null) {
+        const presentation = selectedPresentation(item);
+        const presentationPrice = effectivePresentationPrice(presentation);
+        const presentationQuantity = presentationBaseQuantity(item, presentation);
+        if (presentationPrice != null && presentationQuantity > 0) unitPrice = presentationPrice / presentationQuantity;
+      }
+      if (unitPrice == null) {
         missing += 1;
         return;
       }
-      total += quantity * Number(item.lastUnitPrice);
+      total += quantity * Number(unitPrice);
       priced += 1;
     });
     return { total, priced, missing };
@@ -756,7 +993,7 @@
     const purchased = normalizedPurchased(item);
     const unitPrice = purchased > 0 && item.actualLineTotal != null
       ? Number(item.actualLineTotal) / purchased
-      : item.lastUnitPrice;
+      : item.lastPaidUnitPrice;
     const nextQuantity = recommendedForCurrentPlan(item);
     $(".invoice-unit-price", card).textContent = unitPrice == null
       ? "Precio unitario: por calcular"
@@ -764,9 +1001,12 @@
     $(".invoice-next-estimate", card).textContent = unitPrice == null || nextQuantity == null
       ? "Próxima compra: falta precio o cantidad"
       : `Próxima compra: ${formatMoney(unitPrice * nextQuantity)} para ${formatQuantity(nextQuantity, item.unit)}`;
+    const presentation = selectedPresentation(item);
     $(".invoice-item-status", card).textContent = item.receiptReviewed
-      ? "Revisado y guardado"
-      : item.actualLineTotal == null ? "Falta el total pagado" : "Pendiente de marcar como revisado";
+      ? `Revisado · ${presentation?.label || "cantidad manual"}`
+      : item.actualLineTotal == null
+        ? `Falta el total pagado · ${presentation?.label || "cantidad manual"}`
+        : `${item.priceSource === "catalog" ? "Precio de catálogo por confirmar en factura" : "Pendiente de marcar como revisado"} · ${presentation?.label || "cantidad manual"}`;
     card.classList.toggle("is-reviewed", item.receiptReviewed);
   }
 
@@ -801,16 +1041,19 @@
       item.actualUnit = UNIT_META[unitSelect.value] ? unitSelect.value : item.unit;
       item.quantityPurchased = normalizeQuantityForUnit(quantityInput.value, item.actualUnit);
       item.actualLineTotal = totalInput.value === "" ? null : Math.max(0, Number(totalInput.value) || 0);
+      item.priceSource = item.actualLineTotal == null ? "" : "receipt";
+      item.priceCapturedAt = item.actualLineTotal == null ? "" : (state.currentReceipt.date || todayISO());
       item.receiptReviewed = reviewedInput.checked;
+      const quantityInBase = convertQuantity(item.quantityPurchased, item.actualUnit, item.unit) || 0;
+      const perPresentation = presentationBaseQuantity(item, selectedPresentation(item));
+      item.packCountPurchased = perPresentation ? Number((quantityInBase / perPresentation).toFixed(2)) : item.packCountPurchased;
+      item.selectedPackCount = item.packCountPurchased;
       item.purchaseStatus = statusFromQuantity(item);
       if (item.quantityPurchased > 0) {
         item.purchaseCycleId = state.settings.cycleId;
         if (!item.purchaseDate) item.purchaseDate = state.currentReceipt.date || todayISO();
       } else {
-        item.purchaseCycleId = "";
-        item.purchaseDate = "";
-        item.actualLineTotal = null;
-        item.receiptReviewed = false;
+        clearCurrentPurchase(item);
       }
       const cycleItems = invoiceItems();
       state.currentReceipt.reviewedAt = cycleItems.length > 0 && cycleItems.every((entry) => entry.receiptReviewed)
@@ -922,12 +1165,67 @@
     list.innerHTML = "";
     items.forEach((item) => list.append(createInvoiceItem(item)));
     $("#invoice-empty").hidden = items.length > 0;
-    $("#receipt-store").value = state.currentReceipt.store || "";
+    $("#receipt-store").value = state.currentReceipt.store || CATALOG.store?.name || "Megamaxi Wayra";
     $("#receipt-date").value = state.currentReceipt.date || todayISO();
     $("#receipt-number").value = state.currentReceipt.invoiceNumber || "";
     $("#receipt-reported-total").value = state.currentReceipt.reportedTotal == null ? "" : state.currentReceipt.reportedTotal;
+    $("#finish-purchase-button").disabled = items.length === 0;
     updateInvoiceSummary();
+    renderHistory();
     void renderReceiptPhoto();
+  }
+
+  function renderHistory() {
+    const list = $("#history-list");
+    const empty = $("#history-empty");
+    if (!list || !empty) return;
+    list.innerHTML = "";
+    const entries = [...state.history].reverse();
+    empty.hidden = entries.length > 0;
+    entries.forEach((entry) => {
+      const card = document.createElement("details");
+      card.className = "history-card";
+      const summary = document.createElement("summary");
+      const heading = document.createElement("span");
+      const strong = document.createElement("strong");
+      const purchaseDate = parseLocalDate(entry.purchaseDate || entry.receiptDate || entry.cycleStart);
+      strong.textContent = purchaseDate ? dateFormatter.format(purchaseDate) : "Compra guardada";
+      const meta = document.createElement("span");
+      const count = entry.lineItems?.length || entry.purchased || 0;
+      meta.textContent = `${entry.store || CATALOG.store?.name || "Tienda"} · ${count} producto${count === 1 ? "" : "s"}`;
+      heading.append(strong, meta);
+      const total = document.createElement("span");
+      total.className = "history-total";
+      total.textContent = formatMoney(entry.reportedTotal ?? entry.realTotal ?? entry.total ?? 0);
+      summary.append(heading, total);
+      card.append(summary);
+
+      const lines = document.createElement("div");
+      lines.className = "history-lines";
+      if (!entry.lineItems?.length) {
+        const legacy = document.createElement("div");
+        legacy.className = "history-line";
+        legacy.textContent = "Resumen anterior: esta compra no guardó detalle por producto.";
+        lines.append(legacy);
+      } else {
+        entry.lineItems.forEach((line) => {
+          const row = document.createElement("div");
+          row.className = "history-line";
+          const description = document.createElement("span");
+          const name = document.createElement("strong");
+          name.textContent = line.nameAtPurchase || line.name || "Producto";
+          const detail = document.createElement("span");
+          detail.textContent = `${line.presentationLabel || "Cantidad manual"} · ${formatQuantity(line.quantity || 0, line.unit || "unidades")}`;
+          description.append(name, detail);
+          const amount = document.createElement("strong");
+          amount.textContent = line.lineTotal == null ? "Sin precio" : formatMoney(line.lineTotal);
+          row.append(description, amount);
+          lines.append(row);
+        });
+      }
+      card.append(lines);
+      list.append(card);
+    });
   }
 
   function renderAll() {
@@ -942,36 +1240,68 @@
     return state.items.find((item) => item.id === id);
   }
 
+  function updatePresentation(id, presentationId) {
+    const item = findItem(id);
+    if (!item || !presentationsFor(item).some((entry) => entry.id === presentationId)) return;
+    const wasPurchased = normalizedPurchased(item) > 0;
+    item.selectedPresentationId = presentationId;
+    item.selectedPackCount = null;
+    if (wasPurchased) applyPresentationPurchase(item, recommendedPresentationCount(item, selectedPresentation(item)));
+    saveState({ render: true });
+  }
+
+  function updatePackCount(id, rawCount) {
+    const item = findItem(id);
+    if (!item) return;
+    const presentation = selectedPresentation(item);
+    let count = Math.max(0, Number(rawCount) || 0);
+    if (!presentation?.variableWeight) count = Math.ceil(count);
+    count = Number(count.toFixed(2));
+    const wasPurchased = normalizedPurchased(item) > 0;
+    applyPresentationPurchase(item, count, { markPurchased: wasPurchased });
+    if (!wasPurchased) item.purchaseStatus = item.purchaseStatus === "skipped" ? "skipped" : statusFromQuantity(item);
+    saveState({ render: true });
+  }
+
+  function stepPackCount(id, direction) {
+    const item = findItem(id);
+    if (!item) return;
+    const presentation = selectedPresentation(item);
+    updatePackCount(id, Math.max(0, selectedPackCount(item, presentation) + direction * packStep(presentation)));
+  }
+
   function togglePurchased(id) {
     const item = findItem(id);
     if (!item) return;
     if (normalizedPurchased(item) > 0) {
-      item.quantityPurchased = 0;
-      item.purchaseDate = "";
-      item.purchaseCycleId = "";
-      item.actualLineTotal = null;
-      item.receiptReviewed = false;
+      clearCurrentPurchase(item);
       item.purchaseStatus = statusFromQuantity(item);
     } else {
+      const presentation = selectedPresentation(item);
+      const count = selectedPackCount(item, presentation);
       const recommended = recommendedForCurrentPlan(item);
-      if (recommended == null) {
-        openProductDialog(id);
-        showToast("Primero define la cantidad recomendada.");
-        return;
-      }
-      if (recommended <= 0) {
+      if (recommended != null && recommended <= 0 && count <= 0) {
         item.purchaseStatus = statusFromQuantity(item);
         saveState({ render: true });
         showToast("Ya tienes suficiente; no hace falta comprarlo ahora.");
         return;
       }
-      item.quantityPurchased = Number(recommended.toFixed(3));
-      item.actualUnit = item.unit;
-      item.purchaseDate = todayISO();
-      item.purchaseCycleId = state.settings.cycleId;
-      item.actualLineTotal = null;
-      item.receiptReviewed = false;
-      item.purchaseStatus = statusFromQuantity(item);
+      if (presentation) {
+        applyPresentationPurchase(item, count > 0 ? count : 1);
+      } else {
+        if (recommended == null) {
+          openProductDialog(id);
+          showToast("Primero define la cantidad recomendada.");
+          return;
+        }
+        item.quantityPurchased = Number(recommended.toFixed(3));
+        item.actualUnit = item.unit;
+        item.purchaseDate = todayISO();
+        item.purchaseCycleId = state.settings.cycleId;
+        item.actualLineTotal = null;
+        item.receiptReviewed = false;
+        item.purchaseStatus = statusFromQuantity(item);
+      }
     }
     saveState({ render: true });
   }
@@ -990,12 +1320,7 @@
       item.stockQuantity = null;
       item.stockUnit = item.unit;
       item.stockCheckedAt = todayISO();
-      item.quantityPurchased = 0;
-      item.actualUnit = item.unit;
-      item.purchaseDate = "";
-      item.purchaseCycleId = "";
-      item.actualLineTotal = null;
-      item.receiptReviewed = false;
+      clearCurrentPurchase(item);
       item.purchaseStatus = "onhand";
       showToast("Marcado como disponible en casa.");
     }
@@ -1010,12 +1335,7 @@
       showToast("Producto reactivado para este ciclo.");
     } else {
       item.purchaseStatus = "skipped";
-      item.quantityPurchased = 0;
-      item.actualUnit = item.unit;
-      item.purchaseDate = "";
-      item.purchaseCycleId = "";
-      item.actualLineTotal = null;
-      item.receiptReviewed = false;
+      clearCurrentPurchase(item);
       showToast("No se comprará en este ciclo.");
     }
     saveState({ render: true });
@@ -1026,14 +1346,21 @@
     if (!item) return;
     item.actualUnit = UNIT_META[unit] ? unit : item.unit;
     item.quantityPurchased = normalizeQuantityForUnit(rawQuantity, item.actualUnit);
+    const quantityInBase = convertQuantity(item.quantityPurchased, item.actualUnit, item.unit) || 0;
+    const perPresentation = presentationBaseQuantity(item, selectedPresentation(item));
+    item.packCountPurchased = perPresentation ? Number((quantityInBase / perPresentation).toFixed(2)) : 0;
+    item.selectedPackCount = item.packCountPurchased;
     if (item.purchaseStatus !== "skipped") item.purchaseStatus = statusFromQuantity(item);
     if (item.quantityPurchased > 0) {
       if (!item.purchaseDate) item.purchaseDate = todayISO();
       item.purchaseCycleId = state.settings.cycleId;
     } else {
-      item.purchaseDate = "";
-      item.purchaseCycleId = "";
-      item.actualLineTotal = null;
+      clearCurrentPurchase(item);
+    }
+    if (item.priceSource === "catalog") {
+      const catalogPrice = effectivePresentationPrice(selectedPresentation(item));
+      item.catalogLineTotal = catalogPrice == null ? null : Number((catalogPrice * item.packCountPurchased).toFixed(2));
+      item.actualLineTotal = item.catalogLineTotal;
     }
     item.receiptReviewed = false;
     refreshLastUnitPrice(item);
@@ -1052,20 +1379,7 @@
     const increment = isDiscreteUnit(item.unit) ? 1 : recommended >= 10 ? 1 : recommended >= 1 ? 0.5 : 0.1;
     const currentInBase = normalizedPurchased(item);
     const nextInBase = normalizeQuantityForUnit(currentInBase + direction * increment, item.unit);
-    item.quantityPurchased = Number(nextInBase.toFixed(3));
-    item.actualUnit = item.unit;
-    item.purchaseStatus = statusFromQuantity(item);
-    if (nextInBase > 0) {
-      if (!item.purchaseDate) item.purchaseDate = todayISO();
-      item.purchaseCycleId = state.settings.cycleId;
-    } else {
-      item.purchaseDate = "";
-      item.purchaseCycleId = "";
-      item.actualLineTotal = null;
-    }
-    item.receiptReviewed = false;
-    refreshLastUnitPrice(item);
-    saveState({ render: true });
+    updateQuantity(id, Number(nextInBase.toFixed(3)), item.unit);
   }
 
   function fillRecommended(id) {
@@ -1077,32 +1391,47 @@
       showToast("Primero define la cantidad recomendada.");
       return;
     }
-    item.quantityPurchased = Number(recommended.toFixed(3));
-    item.actualUnit = item.unit;
-    item.purchaseStatus = statusFromQuantity(item);
-    item.purchaseDate = recommended > 0 ? todayISO() : "";
-    item.purchaseCycleId = recommended > 0 ? state.settings.cycleId : "";
-    item.actualLineTotal = null;
-    item.receiptReviewed = false;
+    const presentation = selectedPresentation(item);
+    if (presentation) applyPresentationPurchase(item, recommendedPresentationCount(item, presentation));
+    else {
+      item.quantityPurchased = Number(recommended.toFixed(3));
+      item.actualUnit = item.unit;
+      item.purchaseStatus = statusFromQuantity(item);
+      item.purchaseDate = recommended > 0 ? todayISO() : "";
+      item.purchaseCycleId = recommended > 0 ? state.settings.cycleId : "";
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+    }
     saveState({ render: true });
   }
 
   function applySafeQuantity(id) {
     const item = findItem(id);
     if (!item) return;
+    const wasPurchased = normalizedPurchased(item) > 0;
     const advice = calculatePurchaseAdvice(item);
     const safeQuantity = advice.needed == null ? recommendedForCurrentPlan(item) : advice.needed;
     if (safeQuantity == null) {
       openProductDialog(id);
       return;
     }
-    item.quantityPurchased = Number(Math.max(0, safeQuantity).toFixed(3));
-    item.actualUnit = item.unit;
-    item.purchaseDate = safeQuantity > 0 ? todayISO() : "";
-    item.purchaseCycleId = safeQuantity > 0 ? state.settings.cycleId : "";
-    item.actualLineTotal = null;
-    item.receiptReviewed = false;
-    item.purchaseStatus = statusFromQuantity(item);
+    const presentation = selectedPresentation(item);
+    if (presentation) {
+      const perPresentation = presentationBaseQuantity(item, presentation);
+      const count = safeQuantity <= 0 ? 0 : presentation.variableWeight
+        ? safeQuantity / perPresentation
+        : Math.ceil((safeQuantity - 1e-9) / perPresentation);
+      applyPresentationPurchase(item, Number(count.toFixed(2)), { markPurchased: wasPurchased });
+      if (!wasPurchased) item.purchaseStatus = statusFromQuantity(item);
+    } else {
+      item.quantityPurchased = Number(Math.max(0, safeQuantity).toFixed(3));
+      item.actualUnit = item.unit;
+      item.purchaseDate = safeQuantity > 0 ? todayISO() : "";
+      item.purchaseCycleId = safeQuantity > 0 ? state.settings.cycleId : "";
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+      item.purchaseStatus = statusFromQuantity(item);
+    }
     saveState({ render: true });
     showToast(safeQuantity > 0 ? "Cantidad ajustada para evitar sobrecompra." : "Compra retirada: ya tienes suficiente.");
   }
@@ -1207,9 +1536,12 @@
     item.brand = $("#product-brand-input").value.trim();
     item.monthlyQty = recommendedRaw === "" ? null : normalizeQuantityForUnit(recommendedRaw, selectedUnit);
     item.unit = selectedUnit;
-    if (item.lastUnitPrice != null && previousUnit !== selectedUnit) {
+    if (item.lastPaidUnitPrice != null && previousUnit !== selectedUnit) {
       const unitsPerPrevious = convertQuantity(1, previousUnit, selectedUnit);
-      if (unitsPerPrevious) item.lastUnitPrice = item.lastUnitPrice / unitsPerPrevious;
+      if (unitsPerPrevious) {
+        item.lastPaidUnitPrice = item.lastPaidUnitPrice / unitsPerPrevious;
+        item.lastUnitPrice = item.lastPaidUnitPrice;
+      }
     }
     item.quantityPurchased = purchased;
     item.actualUnit = item.unit;
@@ -1225,19 +1557,27 @@
     else item.planStatus = $("#optional-input").checked ? "optional" : "regular";
     item.notes = $("#product-note-input").value.trim();
     if (requestedStatus === "onhand" && purchased > 0) {
-      item.quantityPurchased = 0;
-      item.purchaseDate = "";
+      clearCurrentPurchase(item);
     }
     if (requestedStatus === "skipped") {
-      item.quantityPurchased = 0;
-      item.purchaseDate = "";
-      item.actualLineTotal = null;
+      clearCurrentPurchase(item);
     }
     if (item.purchaseStatus !== "skipped") item.purchaseStatus = statusFromQuantity(item);
-    if (item.monthlyQty == null && item.purchaseStatus !== "onhand") item.purchaseStatus = "pending";
+    if (item.monthlyQty == null && item.purchaseStatus !== "onhand" && item.quantityPurchased <= 0) item.purchaseStatus = "pending";
     item.purchaseCycleId = item.quantityPurchased > 0 ? state.settings.cycleId : "";
     if (item.quantityPurchased > 0 && !item.purchaseDate) item.purchaseDate = todayISO();
-    if (item.quantityPurchased <= 0) item.actualLineTotal = null;
+    if (item.quantityPurchased > 0) {
+      const perPresentation = presentationBaseQuantity(item, selectedPresentation(item));
+      item.packCountPurchased = perPresentation ? Number((normalizedPurchased(item) / perPresentation).toFixed(2)) : 0;
+      item.selectedPackCount = item.packCountPurchased;
+      if (item.priceSource === "catalog") {
+        const price = effectivePresentationPrice(selectedPresentation(item));
+        item.catalogLineTotal = price == null ? null : Number((price * item.packCountPurchased).toFixed(2));
+        item.actualLineTotal = item.catalogLineTotal;
+      }
+    } else {
+      clearCurrentPurchase(item);
+    }
     item.receiptReviewed = false;
     refreshLastUnitPrice(item);
     saveState({ render: true });
@@ -1296,29 +1636,76 @@
   }
 
   function startNewCycle() {
-    const nextCycleStart = $("#new-cycle-date").value || todayISO();
+    const items = invoiceItems();
+    if (!items.length) {
+      $("#new-cycle-dialog").close();
+      showToast("Marca al menos un producto como comprado antes de finalizar.");
+      return;
+    }
+    if (state.history.some((entry) => entry.cycleId === state.settings.cycleId)) {
+      $("#new-cycle-dialog").close();
+      showToast("Esta compra ya fue guardada.");
+      return;
+    }
+    const purchaseDate = $("#new-cycle-date").value || state.currentReceipt.date || todayISO();
+    state.currentReceipt.date = purchaseDate;
+    items.forEach(refreshLastUnitPrice);
+    const lineItems = items.map((item) => {
+      const presentation = selectedPresentation(item);
+      const purchased = normalizedPurchased(item);
+      return {
+        productId: item.id,
+        nameAtPurchase: item.name,
+        brand: item.brand || presentation?.brand || "",
+        presentationId: presentation?.id || "",
+        presentationLabel: presentation?.label || "Cantidad manual",
+        sku: presentation?.sku || null,
+        barcode: presentation?.barcode || null,
+        packCount: Number(item.packCountPurchased || 0),
+        quantity: purchased,
+        unit: item.unit,
+        unitPrice: purchased > 0 && item.actualLineTotal != null ? Number(item.actualLineTotal) / purchased : null,
+        lineTotal: item.actualLineTotal == null ? null : Number(item.actualLineTotal),
+        catalogLineTotal: item.catalogLineTotal,
+        priceSource: item.priceSource || "manual",
+        priceCapturedAt: item.priceCapturedAt || "",
+        receiptReviewed: Boolean(item.receiptReviewed),
+      };
+    });
     const snapshot = {
       cycleId: state.settings.cycleId,
       endedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
       cycleStart: state.settings.cycleStart,
-      purchased: invoiceItems().length,
+      purchaseDate,
+      purchased: items.length,
       partial: state.items.filter((item) => item.purchaseStatus === "partial").length,
       realTotal: invoiceRealTotal(),
-      reviewed: invoiceItems().filter((item) => item.receiptReviewed).length,
-      store: state.currentReceipt.store || "",
-      receiptDate: state.currentReceipt.date || "",
+      reviewed: items.filter((item) => item.receiptReviewed).length,
+      store: state.currentReceipt.store || CATALOG.store?.name || "Megamaxi Wayra",
+      storeId: CATALOG.store?.id || 741,
+      receiptDate: purchaseDate,
       invoiceNumber: state.currentReceipt.invoiceNumber || "",
       reportedTotal: state.currentReceipt.reportedTotal,
+      photoKey: state.currentReceipt.photoKey || null,
+      lineItems,
+      legacy: false,
     };
     state.history.push(snapshot);
-    state.history = state.history.slice(-12);
+    state.history = state.history.slice(-36);
     state.items.forEach((item) => {
-      const remaining = estimateRemainingAt(item, nextCycleStart);
-      if (remaining != null && remaining > quantityTolerance(item, safeTargetQuantity(item) || 0) / 10) {
+      const keepUnquantifiedStock = item.stockState === "have" && item.stockQuantity == null;
+      const remaining = estimateRemainingAt(item, purchaseDate);
+      if (keepUnquantifiedStock) {
+        item.stockState = "have";
+        item.stockQuantity = null;
+        item.stockUnit = item.unit;
+        item.stockCheckedAt = purchaseDate;
+      } else if (remaining != null && remaining > quantityTolerance(item, safeTargetQuantity(item) || 0) / 10) {
         item.stockState = "have";
         item.stockQuantity = Number(remaining.toFixed(3));
         item.stockUnit = item.unit;
-        item.stockCheckedAt = nextCycleStart;
+        item.stockCheckedAt = purchaseDate;
       } else {
         item.stockState = "unknown";
         item.stockQuantity = null;
@@ -1326,20 +1713,25 @@
         item.stockCheckedAt = "";
       }
       item.quantityPurchased = 0;
+      item.packCountPurchased = 0;
+      item.selectedPackCount = null;
       item.actualUnit = item.unit;
       item.purchaseDate = "";
       item.purchaseCycleId = "";
       item.actualLineTotal = null;
+      item.catalogLineTotal = null;
+      item.priceSource = "";
+      item.priceCapturedAt = "";
       item.receiptReviewed = false;
       item.purchaseStatus = statusFromQuantity(item);
     });
     const nextCycleId = createCycleId();
-    state.settings.cycleStart = nextCycleStart;
+    state.settings.cycleStart = purchaseDate;
     state.settings.cycleId = nextCycleId;
     state.currentReceipt = {
       cycleId: nextCycleId,
-      date: nextCycleStart,
-      store: snapshot.store,
+      date: purchaseDate,
+      store: snapshot.store || CATALOG.store?.name || "Megamaxi Wayra",
       invoiceNumber: "",
       reportedTotal: null,
       reviewedAt: null,
@@ -1348,7 +1740,7 @@
     saveState({ render: true });
     $("#new-cycle-dialog").close();
     switchView("shopping");
-    showToast("Nuevo ciclo iniciado; el sobrante quedó como inventario en casa.");
+    showToast("Compra guardada en el historial. El sobrante quedó en tu despensa.");
   }
 
   function estimateRemainingAt(item, targetDateValue) {
@@ -1463,7 +1855,7 @@
 
   function saveReceiptMetadata() {
     state.currentReceipt.cycleId = state.settings.cycleId;
-    state.currentReceipt.store = $("#receipt-store").value.trim();
+    state.currentReceipt.store = $("#receipt-store").value.trim() || CATALOG.store?.name || "Megamaxi Wayra";
     state.currentReceipt.date = $("#receipt-date").value || todayISO();
     state.currentReceipt.invoiceNumber = $("#receipt-number").value.trim();
     state.currentReceipt.reportedTotal = $("#receipt-reported-total").value === ""
@@ -1549,10 +1941,12 @@
       saveState({ render: true });
     });
 
-    $("#new-cycle-button").addEventListener("click", () => {
-      $("#new-cycle-date").value = todayISO();
+    const openFinishDialog = () => {
+      $("#new-cycle-date").value = state.currentReceipt.date || todayISO();
       openDialog("new-cycle-dialog");
-    });
+    };
+    $("#new-cycle-button").addEventListener("click", openFinishDialog);
+    $("#finish-purchase-button").addEventListener("click", openFinishDialog);
     $("#confirm-new-cycle-button").addEventListener("click", startNewCycle);
     $("#export-button").addEventListener("click", openExportDialog);
     $("#copy-export-button").addEventListener("click", copyExport);
@@ -1599,7 +1993,7 @@
 
   function registerServiceWorker() {
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-      navigator.serviceWorker.register("./sw.js?v=2.1.2").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
+      navigator.serviceWorker.register("./sw.js?v=3.0.1").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
     }
   }
 

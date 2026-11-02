@@ -1,12 +1,13 @@
-const CACHE_NAME = "compras-familiares-v2.1.2";
+const CACHE_NAME = "compras-familiares-v3.0.1";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=2.1.2",
-  "./data.js?v=2.1.2",
-  "./receipt-db.js?v=2.1.2",
-  "./app.js?v=2.1.2",
-  "./manifest.webmanifest?v=2.1.2",
+  "./styles.css?v=3.0.1",
+  "./data.js?v=3.0.1",
+  "./catalog-supermaxi.js?v=3.0.1",
+  "./receipt-db.js?v=3.0.1",
+  "./app.js?v=3.0.1",
+  "./manifest.webmanifest?v=3.0.1",
   "./icon.svg",
   "./icon-192.png",
   "./icon-512.png",
@@ -20,7 +21,9 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys
+        .filter((key) => key.startsWith("compras-familiares-") && key !== CACHE_NAME)
+        .map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
 });

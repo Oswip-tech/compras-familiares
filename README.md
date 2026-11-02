@@ -12,6 +12,11 @@ Sitio esperado: <https://oswip-tech.github.io/compras-familiares/>
 - Lista completa agrupada por despensa, proteínas y lácteos, frutas y verduras,
   lavandería, limpieza e higiene personal.
 - Cantidad recomendada por ciclo semanal, quincenal o mensual.
+- 188 presentaciones seleccionables para los 101 productos, con una presentación
+  estándar sugerida y control visible de cantidad.
+- Snapshot oficial fechado de precios verificados en Megamaxi Wayra (`local=741`). Los
+  productos no verificados se muestran como **precio por confirmar**: la app no inventa
+  valores ni confunde una presentación estándar con una cotización vigente.
 - Acciones rápidas **Compré**, **Aún lo tengo** y **No comprar**, con filtros para saber
   qué falta resolver.
 - Campo desplegable para indicar la cantidad exacta comprada y el inventario que queda.
@@ -27,7 +32,10 @@ Sitio esperado: <https://oswip-tech.github.io/compras-familiares/>
   producto comprado.
 - Foto de la factura guardada localmente como referencia durante la revisión.
 - Total real del ciclo, comparación con el total impreso y proyección de la siguiente
-  compra a partir de los últimos precios conocidos.
+  compra: primero usa el último valor pagado y, si aún no existe, un precio Wayra
+  verificado para la presentación elegida.
+- Botón **Finalizar y guardar compra**, con historial detallado por fecha, tienda,
+  presentación, cantidad, fuente del precio y total de cada línea.
 - Respaldo e importación de los datos en formato JSON.
 - Uso sin conexión e instalación en la pantalla de inicio.
 
@@ -35,17 +43,16 @@ Sitio esperado: <https://oswip-tech.github.io/compras-familiares/>
 
 1. Abre el sitio desde el navegador del teléfono.
 2. Busca o filtra los productos pendientes.
-3. Pulsa **Compré** para registrar la recomendación o **Aún lo tengo** si el producto sigue
-   disponible en casa. Abre **Cambiar cantidad** únicamente si necesitas corregirla.
+3. Elige una presentación, ajusta el contador si compraste más o menos y pulsa
+   **Comprado**. Usa **Aún lo tengo** si el producto sigue disponible en casa.
 4. Atiende cualquier aviso de sobrecompra antes de agregar más, especialmente en frutas,
    verduras y otros productos perecibles.
 5. En **Factura**, toma o selecciona una foto y revisa las líneas compradas. Corrige el
    nombre, la marca, la cantidad y el total pagado para actualizar el gasto y el precio
    de referencia.
 6. Revisa la duración calculada y la fecha aproximada en la que necesitarás reponerlo.
-7. Al comenzar una nueva compra, inicia un ciclo nuevo. La app mantiene como inventario
-   lo que todavía tiene cobertura y vuelve a pedir lo que se agotará dentro del
-   siguiente ciclo.
+7. Pulsa **Finalizar y guardar compra**. La app conserva un historial con la fecha y todas
+   las líneas; además mantiene como inventario lo que todavía tiene cobertura.
 
 La interfaz es responsiva y está preparada para usarse con una sola mano. Puede añadirse
 a la pantalla de inicio desde las opciones del navegador para abrirla como una app.
@@ -92,9 +99,11 @@ afeitadoras— no se fraccionan en cada quincena: la app espera hasta que el lot
 de agotarse antes de recomendar la reposición completa. El remanente fraccionario de
 artículos indivisibles es una estimación de consumo, no una pieza física partida.
 
-El presupuesto siguiente usa el último precio unitario obtenido de las líneas revisadas
-de la factura. Los productos sin precio se cuentan aparte para no presentar un total
-parcial como si fuera completo.
+El presupuesto siguiente usa primero el último precio unitario obtenido de la factura y,
+cuando aún no existe, el precio oficial Wayra verificado de la presentación elegida. Los
+productos sin precio se cuentan aparte para no presentar un total parcial como si fuera
+completo. Cada precio de catálogo conserva fecha, local, SKU, código de barras y URL de
+origen; una cotización no garantiza existencia física en percha.
 
 La proyección es una ayuda para presupuestar. El consumo real puede cambiar por visitas,
 desperdicio, comidas fuera de casa o cambios en el tamaño de la familia.
@@ -109,6 +118,12 @@ python3 -m http.server 8080
 ```
 
 Después abre <http://localhost:8080>.
+
+Para validar cobertura, identificadores y trazabilidad del snapshot:
+
+```bash
+node scripts/validate-catalog.cjs
+```
 
 ## Publicación
 
