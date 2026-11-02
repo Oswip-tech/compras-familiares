@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#185b45" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="description" content="Lista familiar de compras con cantidades recomendadas y proyección de duración." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Compras" />
+    <title>Compras familiares</title>
+
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./data.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main-content">Saltar al contenido</a>
+
+    <div class="app-shell" id="app-shell">
+      <header class="app-header" id="app-header">
+        <div class="header-topline">
+          <div>
+            <p class="eyebrow" id="cycle-label">Compra del mes</p>
+            <h1>Compras familiares</h1>
+          </div>
+          <button class="icon-button install-button" id="install-app-button" type="button" hidden aria-label="Instalar aplicación">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 15v4h14v-4" /></svg>
+          </button>
+        </div>
+        <div class="connection-pill" id="connection-status" role="status" aria-live="polite">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span>Datos guardados en este teléfono</span>
+        </div>
+      </header>
+
+      <main id="main-content" tabindex="-1">
+        <section class="view is-active" id="view-shopping" data-view="shopping" aria-labelledby="shopping-heading">
+          <h2 class="sr-only" id="shopping-heading">Lista de compras</h2>
+
+          <section class="summary-panel" aria-labelledby="summary-heading">
+            <div class="summary-heading-row">
+              <div>
+                <p class="section-kicker">Progreso</p>
+                <h3 id="summary-heading"><span id="summary-purchased">0</span> de <span id="summary-total">0</span> productos</h3>
+              </div>
+              <strong class="coverage-badge" id="summary-coverage">0%</strong>
+            </div>
+            <div class="progress-track" role="progressbar" aria-label="Progreso de la compra" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="shopping-progress">
+              <span class="progress-value" id="shopping-progress-value"></span>
+            </div>
+            <div class="summary-stats" aria-label="Resumen de estados">
+              <div><span class="stat-dot pending" aria-hidden="true"></span><strong id="summary-pending">0</strong><span>Pendientes</span></div>
+              <div><span class="stat-dot partial" aria-hidden="true"></span><strong id="summary-partial">0</strong><span>Parciales</span></div>
+              <div><span class="stat-dot skipped" aria-hidden="true"></span><strong id="summary-skipped">0</strong><span>No comprar</span></div>
+            </div>
+          </section>
+
+          <section class="shopping-tools" aria-labelledby="tools-heading">
+            <h3 class="sr-only" id="tools-heading">Buscar y filtrar</h3>
+            <div class="search-field">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m16 16 4 4" /></svg>
+              <label class="sr-only" for="search-input">Buscar producto</label>
+              <input id="search-input" type="search" inputmode="search" autocomplete="off" placeholder="Buscar producto" />
+              <button class="clear-search" id="clear-search-button" type="button" aria-label="Limpiar búsqueda" hidden>&times;</button>
+            </div>
+
+            <div class="filter-scroll" id="status-filters" aria-label="Filtrar por estado">
+              <button class="filter-chip is-selected" type="button" data-status-filter="all" aria-pressed="true">Todos</button>
+              <button class="filter-chip" type="button" data-status-filter="pending" aria-pressed="false">Pendientes</button>
+              <button class="filter-chip" type="button" data-status-filter="partial" aria-pressed="false">Parciales</button>
+              <button class="filter-chip" type="button" data-status-filter="purchased" aria-pressed="false">Comprados</button>
+              <button class="filter-chip" type="button" data-status-filter="skipped" aria-pressed="false">No comprar</button>
+            </div>
+
+            <div class="select-row">
+              <label>
+                <span>Categoría</span>
+                <select id="category-filter">
+                  <option value="all">Todas</option>
+                </select>
+              </label>
+              <label>
+                <span>Compra</span>
+                <select id="cadence-filter">
+                  <option value="all">Cualquier frecuencia</option>
+                  <option value="weekly">Semanal</option>
+                  <option value="fortnightly">Quincenal</option>
+                  <option value="monthly">Mensual</option>
+                  <option value="bimonthly">Cada 2 meses</option>
+                  <option value="quarterly">Cada 3 meses</option>
+                  <option value="stock">Por reserva</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="category-list" id="category-list" aria-label="Productos por categoría"></section>
+
+          <div class="empty-state" id="empty-state" hidden>
+            <svg aria-hidden="true" viewBox="0 0 64 64"><path d="M14 18h36l-4 31H18z" /><path d="M24 18a8 8 0 0 1 16 0M24 31h16" /></svg>
+            <h3>No encontramos productos</h3>
+            <p>Prueba otra búsqueda o cambia los filtros.</p>
+            <button class="secondary-button" id="reset-filters-button" type="button">Limpiar filtros</button>
+          </div>
+        </section>
+
+        <section class="view" id="view-replenishment" data-view="replenishment" aria-labelledby="replenishment-heading" hidden>
+          <header class="view-header">
+            <p class="section-kicker">Inventario estimado</p>
+            <h2 id="replenishment-heading">Próximas reposiciones</h2>
+            <p>Fechas calculadas según la cantidad comprada y el consumo familiar recomendado.</p>
+          </header>
+
+          <div class="notice-card" id="duration-notice">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 10v6m0-9h.01" /></svg>
+            <p>La duración estimada no reemplaza la fecha de caducidad ni las condiciones de conservación.</p>
+          </div>
+
+          <div class="replenishment-summary" id="replenishment-summary">
+            <div><span>Atrasados</span><strong id="replenish-overdue-count">0</strong></div>
+            <div><span>Esta semana</span><strong id="replenish-week-count">0</strong></div>
+            <div><span>Próximos 30 días</span><strong id="replenish-month-count">0</strong></div>
+            <div><span>Sin cálculo</span><strong id="replenish-unknown-count">0</strong></div>
+          </div>
+
+          <section class="replenishment-list" id="replenishment-list" aria-live="polite"></section>
+        </section>
+
+        <section class="view" id="view-settings" data-view="settings" aria-labelledby="settings-heading" hidden>
+          <header class="view-header">
+            <p class="section-kicker">Preferencias</p>
+            <h2 id="settings-heading">Ajustes y respaldo</h2>
+            <p>La información se guarda únicamente en este dispositivo.</p>
+          </header>
+
+          <section class="settings-card" aria-labelledby="cycle-settings-heading">
+            <h3 id="cycle-settings-heading">Ciclo de compra</h3>
+            <label class="settings-field" for="default-cadence">
+              <span>Frecuencia principal</span>
+              <select id="default-cadence">
+                <option value="weekly">Semanal</option>
+                <option value="fortnightly">Quincenal</option>
+                <option value="monthly">Mensual</option>
+              </select>
+            </label>
+            <label class="settings-field" for="cycle-start-date">
+              <span>Inicio del ciclo actual</span>
+              <input id="cycle-start-date" type="date" />
+            </label>
+            <label class="toggle-row" for="show-optional-items">
+              <span><strong>Mostrar productos opcionales</strong><small>Incluye productos que no son indispensables.</small></span>
+              <input id="show-optional-items" type="checkbox" role="switch" checked />
+            </label>
+            <label class="toggle-row" for="show-non-habitual-items">
+              <span><strong>Mostrar productos no habituales</strong><small>Puedes agregarlos a una compra cuando los necesites.</small></span>
+              <input id="show-non-habitual-items" type="checkbox" role="switch" />
+            </label>
+          </section>
+
+          <section class="settings-card" aria-labelledby="data-heading">
+            <h3 id="data-heading">Tus datos</h3>
+            <div class="storage-status">
+              <div>
+                <span>Último guardado</span>
+                <strong id="last-saved-label">Sin cambios</strong>
+              </div>
+              <span class="storage-icon" aria-hidden="true">✓</span>
+            </div>
+            <div class="settings-actions">
+              <button class="secondary-button" id="export-button" type="button">Exportar respaldo</button>
+              <button class="secondary-button" id="import-button" type="button">Importar respaldo</button>
+              <button class="primary-button" id="new-cycle-button" type="button">Iniciar nuevo ciclo</button>
+            </div>
+          </section>
+
+          <section class="settings-card danger-zone" aria-labelledby="danger-heading">
+            <h3 id="danger-heading">Restablecer</h3>
+            <p>Elimina las compras guardadas y recupera la lista inicial.</p>
+            <button class="danger-button" id="reset-app-button" type="button">Borrar datos de este dispositivo</button>
+          </section>
+
+          <p class="app-version">Compras familiares <span id="app-version">v1.0</span></p>
+        </section>
+      </main>
+
+      <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+
+      <nav class="bottom-nav" aria-label="Navegación principal">
+        <button class="nav-item is-active" type="button" data-view-target="shopping" aria-current="page">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8h16l-2 12H6zM8 8a4 4 0 0 1 8 0" /></svg>
+          <span>Comprar</span>
+        </button>
+        <button class="nav-item" type="button" data-view-target="replenishment">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9" /><path d="M12 7v6l4 2M17 3h4v4" /></svg>
+          <span>Reposición</span>
+        </button>
+        <button class="nav-item" type="button" data-view-target="settings">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19 13.5v-3l-2-.7a7 7 0 0 0-.7-1.7l.9-1.9-2.1-2.1-1.9.9a7 7 0 0 0-1.7-.7L10.5 2h-3l-.7 2.3a7 7 0 0 0-1.7.7l-1.9-.9-2.1 2.1.9 1.9a7 7 0 0 0-.7 1.7L-1 10.5v3l2.3.7a7 7 0 0 0 .7 1.7l-.9 1.9 2.1 2.1 1.9-.9a7 7 0 0 0 1.7.7l.7 2.3h3l.7-2.3a7 7 0 0 0 1.7-.7l1.9.9 2.1-2.1-.9-1.9a7 7 0 0 0 .7-1.7z" transform="translate(3) scale(.75)" /></svg>
+          <span>Ajustes</span>
+        </button>
+      </nav>
+    </div>
+
+    <template id="category-section-template">
+      <section class="category-section">
+        <button class="category-heading" type="button" aria-expanded="true">
+          <span class="category-icon" aria-hidden="true"></span>
+          <span class="category-title-wrap"><strong class="category-name"></strong><small class="category-count"></small></span>
+          <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m7 9 5 5 5-5" /></svg>
+        </button>
+        <div class="product-list"></div>
+      </section>
+    </template>
+
+    <template id="product-card-template">
+      <article class="product-card">
+        <div class="product-card-main">
+          <button class="purchase-toggle" type="button" aria-pressed="false" aria-label="Marcar producto como comprado">
+            <svg class="check-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4 10-10" /></svg>
+          </button>
+          <button class="product-open" type="button">
+            <span class="product-heading"><strong class="product-name"></strong><span class="product-tags"></span></span>
+            <span class="product-brand" hidden></span>
+            <span class="product-recommendation">Recomendado: <strong class="recommended-quantity"></strong></span>
+            <span class="product-duration"><span class="duration-icon" aria-hidden="true">◷</span><span class="duration-label">Sin compra registrada</span></span>
+          </button>
+        </div>
+        <div class="quantity-row">
+          <span>Compré</span>
+          <div class="stepper">
+            <button class="quantity-decrease" type="button" aria-label="Disminuir cantidad">−</button>
+            <input class="actual-quantity" type="number" inputmode="decimal" min="0" step="any" value="0" />
+            <button class="quantity-increase" type="button" aria-label="Aumentar cantidad">+</button>
+          </div>
+          <select class="actual-unit" aria-label="Unidad comprada"></select>
+          <button class="fill-recommended-button" type="button">Completar</button>
+        </div>
+        <div class="product-status" aria-live="polite"></div>
+      </article>
+    </template>
+
+    <template id="replenishment-item-template">
+      <article class="replenishment-item">
+        <span class="replenishment-date"><strong class="replenishment-day"></strong><small class="replenishment-month"></small></span>
+        <div><h3 class="replenishment-name"></h3><p class="replenishment-detail"></p></div>
+        <span class="replenishment-urgency"></span>
+      </article>
+    </template>
+
+    <dialog class="app-dialog product-dialog" id="product-dialog" aria-labelledby="product-dialog-title">
+      <form id="product-form" method="dialog">
+        <div class="dialog-handle" aria-hidden="true"></div>
+        <header class="dialog-header">
+          <div><p class="section-kicker" id="product-dialog-category"></p><h2 id="product-dialog-title">Editar producto</h2></div>
+          <button class="icon-button dialog-close" type="button" data-dialog-close aria-label="Cerrar">&times;</button>
+        </header>
+        <input id="product-id" type="hidden" />
+        <div class="dialog-body form-grid">
+          <label class="full-width">Producto<input id="product-name-input" type="text" autocomplete="off" required /></label>
+          <label class="full-width">Marca habitual (opcional)<input id="product-brand-input" type="text" autocomplete="off" placeholder="Déjala vacía hasta elegirla" /></label>
+          <label>Cantidad recomendada<input id="recommended-quantity-input" type="number" inputmode="decimal" min="0" step="any" /></label>
+          <label>Unidad<select id="recommended-unit-input"></select></label>
+          <label>Cantidad comprada<input id="purchased-quantity-input" type="number" inputmode="decimal" min="0" step="any" /></label>
+          <label>Fecha de compra<input id="purchase-date-input" type="date" /></label>
+          <label class="full-width">Estado<select id="product-status-input"><option value="pending">Pendiente</option><option value="partial">Compra parcial</option><option value="purchased">Comprado</option><option value="skipped">No comprar</option></select></label>
+          <label class="toggle-row compact full-width" for="habitual-input"><span><strong>Producto habitual</strong><small>Se incluye normalmente en la compra.</small></span><input id="habitual-input" type="checkbox" role="switch" /></label>
+          <label class="toggle-row compact full-width" for="optional-input"><span><strong>Producto opcional</strong><small>No cuenta como indispensable.</small></span><input id="optional-input" type="checkbox" role="switch" /></label>
+          <label class="full-width">Nota<textarea id="product-note-input" rows="3" placeholder="Presentación preferida, conservación u otra nota"></textarea></label>
+          <div class="calculation-card full-width" id="product-calculation">
+            <span>Duración estimada</span><strong id="dialog-duration">Sin datos</strong><small id="dialog-replenishment-date"></small>
+          </div>
+        </div>
+        <footer class="dialog-actions">
+          <button class="secondary-button" type="button" data-dialog-close>Cancelar</button>
+          <button class="primary-button" id="save-product-button" type="submit">Guardar cambios</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog" id="new-cycle-dialog" aria-labelledby="new-cycle-title">
+      <form method="dialog">
+        <div class="dialog-handle" aria-hidden="true"></div>
+        <header class="dialog-header"><div><p class="section-kicker">Nueva compra</p><h2 id="new-cycle-title">¿Iniciar un nuevo ciclo?</h2></div><button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button></header>
+        <div class="dialog-body"><p>Se reiniciarán los productos que deban reponerse dentro del nuevo ciclo. Los que todavía tengan cobertura se conservarán como comprados.</p><label>Fecha de inicio<input id="new-cycle-date" type="date" /></label></div>
+        <footer class="dialog-actions"><button class="secondary-button" type="button" data-dialog-close>Cancelar</button><button class="primary-button" id="confirm-new-cycle-button" type="button">Iniciar ciclo</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog" id="export-dialog" aria-labelledby="export-title">
+      <form method="dialog">
+        <div class="dialog-handle" aria-hidden="true"></div>
+        <header class="dialog-header"><div><p class="section-kicker">Respaldo</p><h2 id="export-title">Exportar datos</h2></div><button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button></header>
+        <div class="dialog-body"><p>Guarda este archivo para recuperar tu lista en otro dispositivo.</p><textarea id="export-data" class="data-preview" rows="7" readonly aria-label="Datos de respaldo"></textarea></div>
+        <footer class="dialog-actions stacked-mobile"><button class="secondary-button" id="copy-export-button" type="button">Copiar</button><button class="primary-button" id="download-export-button" type="button">Descargar respaldo</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog" id="import-dialog" aria-labelledby="import-title">
+      <form method="dialog">
+        <div class="dialog-handle" aria-hidden="true"></div>
+        <header class="dialog-header"><div><p class="section-kicker">Restaurar</p><h2 id="import-title">Importar respaldo</h2></div><button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button></header>
+        <div class="dialog-body">
+          <label class="file-drop" for="import-file"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 16V5m0 0L8 9m4-4 4 4M5 15v4h14v-4" /></svg><strong>Elegir archivo JSON</strong><span>o pega el contenido debajo</span><input id="import-file" type="file" accept="application/json,.json" /></label>
+          <label>Contenido del respaldo<textarea id="import-data" rows="6" spellcheck="false"></textarea></label>
+          <p class="field-error" id="import-error" role="alert" hidden></p>
+        </div>
+        <footer class="dialog-actions"><button class="secondary-button" type="button" data-dialog-close>Cancelar</button><button class="primary-button" id="confirm-import-button" type="button">Restaurar datos</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog" id="reset-dialog" aria-labelledby="reset-title">
+      <form method="dialog">
+        <div class="dialog-handle" aria-hidden="true"></div>
+        <header class="dialog-header"><div><p class="section-kicker danger-text">Acción permanente</p><h2 id="reset-title">¿Borrar todos los datos?</h2></div><button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button></header>
+        <div class="dialog-body"><p>Se eliminarán compras, cambios y preferencias de este dispositivo. Esta acción no se puede deshacer.</p></div>
+        <footer class="dialog-actions"><button class="secondary-button" type="button" data-dialog-close>Conservar datos</button><button class="danger-button" id="confirm-reset-button" type="button">Sí, borrar todo</button></footer>
+      </form>
+    </dialog>
+
+    <noscript><div class="noscript-message">Esta aplicación necesita JavaScript para guardar y calcular tus compras.</div></noscript>
+  </body>
+</html>
