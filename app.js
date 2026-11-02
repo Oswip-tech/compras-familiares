@@ -1,9 +1,9 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "1.0.1";
+  const APP_VERSION = "2.1.1";
   const STORAGE_KEY = "shoppingPlanner:v1";
-  const SCHEMA_VERSION = 1;
+  const SCHEMA_VERSION = 2;
 
   const CATEGORY_META = {
     despensa: { label: "Despensa", icon: "<svg viewBox='0 0 24 24'><path d='M4 9h16v11H4zM7 9V5h10v4M8 13h8'/></svg>" },
@@ -31,15 +31,18 @@
 
   const CADENCE_DAYS = { weekly: 7, fortnightly: 15, monthly: 30 };
   const CADENCE_LABELS = { weekly: "semanal", fortnightly: "quincenal", monthly: "mensual" };
-  const STATUS_LABELS = { pending: "Pendiente", partial: "Compra parcial", purchased: "Comprado", skipped: "No comprar" };
+  const STATUS_LABELS = { pending: "Pendiente", partial: "Compra parcial", purchased: "Comprado", onhand: "Aún lo tengo", skipped: "No comprar" };
   const dateFormatter = new Intl.DateTimeFormat("es-EC", { day: "numeric", month: "short", year: "numeric" });
   const shortMonthFormatter = new Intl.DateTimeFormat("es-EC", { month: "short" });
+  const moneyFormatter = new Intl.NumberFormat("es-EC", { style: "currency", currency: "USD" });
 
   let state = loadState();
   let activeStatusFilter = "all";
   let activeView = "shopping";
   let installPrompt = null;
   let toastTimer = null;
+  let receiptObjectUrl = null;
+  let receiptRenderToken = 0;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -48,6 +51,11 @@
     const now = new Date();
     const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     return local.toISOString().slice(0, 10);
+  }
+
+  function createCycleId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    return `cycle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   function parseLocalDate(value) {
@@ -85,11 +93,16 @@
     return `${formatNumber(value)} ${label}`;
   }
 
+  function formatMoney(value) {
+    return moneyFormatter.format(Number(value) || 0);
+  }
+
   function normalizeText(value) {
     return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
   }
 
   function createInitialState() {
+    const cycleId = createCycleId();
     return {
       schemaVersion: SCHEMA_VERSION,
       items: window.SHOPPING_ITEMS.map((item) => ({
@@ -99,12 +112,32 @@
         quantityPurchased: 0,
         actualUnit: item.unit,
         purchaseDate: "",
+        purchaseCycleId: "",
+        stockState: "unknown",
+        stockQuantity: null,
+        stockUnit: item.unit,
+        stockCheckedAt: "",
+        receiptLabel: "",
+        actualLineTotal: null,
+        receiptReviewed: false,
+        lastUnitPrice: null,
+        lastPriceDate: "",
       })),
       settings: {
         defaultCadence: "fortnightly",
         cycleStart: todayISO(),
+        cycleId,
         showOptional: true,
         showInactive: false,
+      },
+      currentReceipt: {
+        cycleId,
+        date: todayISO(),
+        store: "",
+        invoiceNumber: "",
+        reportedTotal: null,
+        reviewedAt: null,
+        photoKey: null,
       },
       history: [],
       lastSaved: null,
@@ -114,6 +147,8 @@
   function normalizeLoadedState(raw) {
     const initial = createInitialState();
     if (!raw || typeof raw !== "object" || !Array.isArray(raw.items)) return initial;
+    const settings = { ...initial.settings, ...(raw.settings || {}) };
+    if (!settings.cycleId || typeof settings.cycleId !== "string") settings.cycleId = initial.settings.cycleId;
     const storedById = new Map(raw.items.map((item) => [item.id, item]));
     const items = window.SHOPPING_ITEMS.map((base) => {
       const stored = storedById.get(base.id) || {};
@@ -124,18 +159,50 @@
       merged.unit = UNIT_META[merged.unit] ? merged.unit : base.unit;
       merged.monthlyQty = storedQuantity == null ? null : normalizeQuantityForUnit(storedQuantity, merged.unit);
       merged.brand = typeof stored.brand === "string" ? stored.brand.trim() : "";
-      merged.actualUnit = UNIT_META[stored.actualUnit] ? stored.actualUnit : merged.unit;
+      merged.actualUnit = compatibleUnits(merged.unit).includes(stored.actualUnit) ? stored.actualUnit : merged.unit;
       merged.quantityPurchased = normalizeQuantityForUnit(stored.quantityPurchased || 0, merged.actualUnit);
       merged.purchaseStatus = STATUS_LABELS[stored.purchaseStatus] ? stored.purchaseStatus : "pending";
       merged.planStatus = ["regular", "optional", "inactive"].includes(stored.planStatus) ? stored.planStatus : base.planStatus;
+      merged.purchaseCycleId = typeof stored.purchaseCycleId === "string" && stored.purchaseCycleId
+        ? stored.purchaseCycleId
+        : merged.quantityPurchased > 0 ? settings.cycleId : "";
+      merged.stockState = ["unknown", "have", "none"].includes(stored.stockState) ? stored.stockState : "unknown";
+      merged.stockUnit = compatibleUnits(merged.unit).includes(stored.stockUnit) ? stored.stockUnit : merged.unit;
+      merged.stockQuantity = stored.stockQuantity == null || stored.stockQuantity === ""
+        ? null
+        : normalizeStockQuantity(stored.stockQuantity);
+      merged.stockCheckedAt = typeof stored.stockCheckedAt === "string" ? stored.stockCheckedAt : "";
+      merged.receiptLabel = typeof stored.receiptLabel === "string" ? stored.receiptLabel.trim() : "";
+      merged.actualLineTotal = stored.actualLineTotal == null || stored.actualLineTotal === ""
+        ? null
+        : Math.max(0, Number(stored.actualLineTotal) || 0);
+      merged.receiptReviewed = Boolean(stored.receiptReviewed);
+      merged.lastUnitPrice = stored.lastUnitPrice == null || !Number.isFinite(Number(stored.lastUnitPrice))
+        ? null
+        : Math.max(0, Number(stored.lastUnitPrice));
+      merged.lastPriceDate = typeof stored.lastPriceDate === "string" ? stored.lastPriceDate : "";
+      if (merged.purchaseStatus === "onhand" && merged.stockState !== "have") merged.stockState = "have";
       return merged;
     });
+    const currentReceipt = {
+      ...initial.currentReceipt,
+      ...(raw.currentReceipt || {}),
+      cycleId: settings.cycleId,
+    };
+    currentReceipt.date = typeof currentReceipt.date === "string" ? currentReceipt.date : todayISO();
+    currentReceipt.store = typeof currentReceipt.store === "string" ? currentReceipt.store : "";
+    currentReceipt.invoiceNumber = typeof currentReceipt.invoiceNumber === "string" ? currentReceipt.invoiceNumber : "";
+    currentReceipt.reportedTotal = currentReceipt.reportedTotal == null || currentReceipt.reportedTotal === ""
+      ? null
+      : Math.max(0, Number(currentReceipt.reportedTotal) || 0);
+    currentReceipt.photoKey = typeof currentReceipt.photoKey === "string" ? currentReceipt.photoKey : null;
     return {
       ...initial,
       ...raw,
       schemaVersion: SCHEMA_VERSION,
       items,
-      settings: { ...initial.settings, ...(raw.settings || {}) },
+      settings,
+      currentReceipt,
       history: Array.isArray(raw.history) ? raw.history.slice(-12) : [],
     };
   }
@@ -179,13 +246,12 @@
     return isDiscreteUnit(unit) ? Math.ceil(numeric) : numeric;
   }
 
-  function recommendedForCurrentPlan(item) {
-    if (item.monthlyQty == null || !Number.isFinite(Number(item.monthlyQty))) return null;
-    if (item.referenceDays > 30) return Number(item.monthlyQty);
-    const planDays = CADENCE_DAYS[state.settings.defaultCadence] || 30;
-    const quantity = Number(item.monthlyQty) * planDays / Number(item.referenceDays || 30);
-    const unitFamily = UNIT_META[item.unit]?.family;
-    return ["mass", "volume", "length"].includes(unitFamily) ? quantity : Math.ceil(quantity);
+  function normalizeStockQuantity(quantity) {
+    return Math.max(0, Number(quantity) || 0);
+  }
+
+  function planDays() {
+    return CADENCE_DAYS[state.settings.defaultCadence] || 30;
   }
 
   function normalizedPurchased(item) {
@@ -193,16 +259,138 @@
     return result == null ? 0 : result;
   }
 
+  function refreshLastUnitPrice(item) {
+    const purchased = normalizedPurchased(item);
+    if (purchased <= 0 || item.actualLineTotal == null) return;
+    item.lastUnitPrice = Number(item.actualLineTotal) / purchased;
+    item.lastPriceDate = state.currentReceipt?.date || item.purchaseDate || todayISO();
+  }
+
+  function normalizedStock(item) {
+    if (item.stockState !== "have" || item.stockQuantity == null) return 0;
+    const result = convertQuantity(item.stockQuantity, item.stockUnit || item.unit, item.unit);
+    return result == null ? 0 : result;
+  }
+
+  function dailyConsumption(item) {
+    if (item.monthlyQty == null || Number(item.monthlyQty) <= 0) return null;
+    return Number(item.monthlyQty) / Number(item.referenceDays || 30);
+  }
+
+  function safeDaysForPlan(item) {
+    if (Number(item.referenceDays || 30) > 30) return Number(item.referenceDays);
+    const candidates = [planDays(), Number(item.cadenceDays || 0), Number(item.shelfLifeDays || 0)].filter((value) => value > 0);
+    return Math.max(1, Math.min(...candidates));
+  }
+
+  function safeTargetQuantity(item) {
+    const daily = dailyConsumption(item);
+    if (daily == null) return null;
+    return Number(item.referenceDays || 30) > 30
+      ? Number(item.monthlyQty)
+      : daily * safeDaysForPlan(item);
+  }
+
+  function isBatchItem(item) {
+    return Number(item.referenceDays || 30) > 30;
+  }
+
+  function batchDaysRemaining(item) {
+    const daily = dailyConsumption(item);
+    if (!isBatchItem(item) || daily == null || daily <= 0) return null;
+    return normalizedStock(item) / daily;
+  }
+
+  function recommendedForCurrentPlan(item) {
+    const target = safeTargetQuantity(item);
+    if (target == null) return null;
+    if (item.stockState === "have" && item.stockQuantity == null) return 0;
+    const stock = normalizedStock(item);
+    if (isBatchItem(item) && stock > 0) {
+      const daysRemaining = batchDaysRemaining(item);
+      if (daysRemaining != null && daysRemaining > planDays()) return 0;
+      return normalizeQuantityForUnit(target, item.unit);
+    }
+    const needed = Math.max(0, target - stock);
+    return isDiscreteUnit(item.unit) ? Math.ceil(needed) : needed;
+  }
+
+  function availableQuantity(item) {
+    return normalizedStock(item) + normalizedPurchased(item);
+  }
+
+  function quantityTolerance(item, target) {
+    if (isDiscreteUnit(item.unit)) return 1e-9;
+    if (["kg", "L"].includes(item.unit)) return Math.max(Number(target || 0) * 0.1, 0.1);
+    if (["g", "ml"].includes(item.unit)) return Math.max(Number(target || 0) * 0.1, 50);
+    return Math.max(Number(target || 0) * 0.1, 0.1);
+  }
+
+  function calculatePurchaseAdvice(item) {
+    const target = safeTargetQuantity(item);
+    const stock = normalizedStock(item);
+    const purchased = normalizedPurchased(item);
+    const needed = target == null ? null : recommendedForCurrentPlan(item);
+    if (item.stockState === "have" && item.stockQuantity == null) {
+      return purchased > 0
+        ? { level: "warning", message: "Marcaste que aún lo tienes. Indica cuánto queda para saber si esta compra es necesaria.", needed: null, excess: null }
+        : { level: "safe", message: "Lo tienes en casa. No necesitas comprarlo en este ciclo.", needed: 0, excess: 0 };
+    }
+    if (target == null) {
+      return purchased > 0
+        ? { level: "info", message: "Define la cantidad recomendada para calcular si compraste de más.", needed: null, excess: null }
+        : { level: "none", message: "", needed: null, excess: null };
+    }
+    const available = stock + purchased;
+    const allowed = isBatchItem(item) || isDiscreteUnit(item.unit)
+      ? stock + Number(needed || 0)
+      : target;
+    const excess = Math.max(0, available - allowed);
+    const tolerance = quantityTolerance(item, target);
+    if (excess > tolerance) {
+      const perishable = Number(item.shelfLifeDays || 0) > 0 && Number(item.shelfLifeDays) <= 30;
+      const coverage = dailyConsumption(item) ? available / dailyConsumption(item) : null;
+      const preservation = Number(item.shelfLifeDays || 0);
+      const message = perishable
+        ? `Puede desperdiciarse: tienes ${formatQuantity(available, item.unit)} y para ${safeDaysForPlan(item)} días conviene ${formatQuantity(target, item.unit)}. Evita ${formatQuantity(excess, item.unit)} extra.`
+        : `Compraste más de lo planificado. Alcanzaría aproximadamente ${formatNumber(coverage, 0)} días.`;
+      return { level: perishable ? "danger" : "warning", message, needed, excess, coverage, preservation };
+    }
+    if (needed <= 0 && purchased <= 0 && stock > 0) {
+      const days = batchDaysRemaining(item);
+      const message = days != null
+        ? `Aún tienes para aproximadamente ${formatNumber(days, 0)} días. No repongas este lote todavía.`
+        : "Ya tienes suficiente en casa para este ciclo.";
+      return { level: "safe", message, needed: 0, excess: 0 };
+    }
+    if ((stock > 0 || purchased > 0) && purchased + tolerance < needed) {
+      const missing = Math.max(0, needed - purchased);
+      return {
+        level: "partial",
+        message: `Aún falta ${formatQuantity(missing, item.unit)} para cubrir este ciclo.`,
+        needed,
+        excess: 0,
+      };
+    }
+    if (purchased > 0 || stock > 0) {
+      return { level: "safe", message: `Cantidad adecuada para aproximadamente ${safeDaysForPlan(item)} días.`, needed, excess: 0 };
+    }
+    return { level: "none", message: "", needed, excess: 0 };
+  }
+
   function calculateProjection(item, overrides = {}) {
     const referenceQty = Object.prototype.hasOwnProperty.call(overrides, "referenceQty")
       ? overrides.referenceQty
       : item.monthlyQty;
     const purchasedQty = overrides.purchasedQty ?? normalizedPurchased(item);
-    const purchaseDate = parseLocalDate(overrides.purchaseDate ?? item.purchaseDate);
-    if (referenceQty == null || Number(referenceQty) <= 0 || Number(purchasedQty) <= 0) {
+    const stockQty = Object.prototype.hasOwnProperty.call(overrides, "stockQty") ? overrides.stockQty : normalizedStock(item);
+    const totalQty = Number(purchasedQty || 0) + Number(stockQty || 0);
+    const dateValue = overrides.purchaseDate ?? (Number(purchasedQty) > 0 ? item.purchaseDate : item.stockCheckedAt);
+    const purchaseDate = parseLocalDate(dateValue);
+    if (referenceQty == null || Number(referenceQty) <= 0 || totalQty <= 0) {
       return { durationDays: null, usableDays: null, replenishmentDate: null, shelfLimited: false };
     }
-    const durationDays = Number(item.referenceDays || 30) * Number(purchasedQty) / Number(referenceQty);
+    const durationDays = Number(item.referenceDays || 30) * totalQty / Number(referenceQty);
     const shelfLife = Number(item.shelfLifeDays || 0);
     const shelfLimited = shelfLife > 0 && shelfLife < durationDays;
     const usableDays = shelfLimited ? shelfLife : durationDays;
@@ -244,10 +432,16 @@
 
   function statusFromQuantity(item) {
     const purchased = normalizedPurchased(item);
-    const recommended = recommendedForCurrentPlan(item);
-    if (purchased <= 0) return "pending";
-    if (recommended == null || recommended <= 0) return "pending";
-    return purchased + 1e-9 >= recommended * 0.98 ? "purchased" : "partial";
+    const stock = normalizedStock(item);
+    const target = safeTargetQuantity(item);
+    if (item.stockState === "have" && item.stockQuantity == null && purchased <= 0) return "onhand";
+    if (target == null) return purchased > 0 ? "purchased" : item.stockState === "have" ? "onhand" : "pending";
+    const needed = recommendedForCurrentPlan(item);
+    const available = stock + purchased;
+    if (purchased <= 0 && needed != null && needed <= 1e-9 && stock > 0) return "onhand";
+    if (purchased > 0 && needed != null && purchased + 1e-9 >= needed) return "purchased";
+    if (available > 0) return "partial";
+    return "pending";
   }
 
   function includedBySettings(item) {
@@ -265,7 +459,8 @@
       if (search && !normalizeText(`${item.name} ${item.brand || ""} ${item.notes}`).includes(search)) return false;
       if (category !== "all" && item.category !== category) return false;
       if (cadence !== "all" && cadenceKey(item) !== cadence) return false;
-      if (activeStatusFilter !== "all" && item.purchaseStatus !== activeStatusFilter) return false;
+      if (activeStatusFilter === "onhand" && item.stockState !== "have") return false;
+      if (activeStatusFilter !== "all" && activeStatusFilter !== "onhand" && item.purchaseStatus !== activeStatusFilter) return false;
       return true;
     });
   }
@@ -314,6 +509,7 @@
     const card = $(".product-card", fragment);
     card.dataset.itemId = item.id;
     card.classList.toggle("is-purchased", item.purchaseStatus === "purchased");
+    card.classList.toggle("is-onhand", item.stockState === "have");
     card.classList.toggle("is-skipped", item.purchaseStatus === "skipped");
     $(".product-name", card).textContent = item.name;
     const brandLabel = $(".product-brand", card);
@@ -326,32 +522,50 @@
     if (item.planStatus === "optional") tags.append(createTag("Opcional"));
     if (item.planStatus === "inactive") tags.append(createTag("No habitual"));
     if (item.monthlyQty == null) tags.append(createTag("Definir cantidad"));
+    if (item.stockState === "have") tags.append(createTag("En casa"));
 
     const recommended = recommendedForCurrentPlan(item);
     $(".recommended-quantity", card).textContent = recommended == null
       ? "definir cantidad"
-      : formatQuantity(recommended, item.unit);
+      : recommended <= 0 ? "no comprar ahora" : formatQuantity(recommended, item.unit);
 
     const projection = calculateProjection(item);
     const durationLabel = $(".duration-label", card);
     if (projection.usableDays != null) {
       const dateText = projection.replenishmentDate ? ` · hasta ${dateFormatter.format(projection.replenishmentDate)}` : "";
       durationLabel.textContent = `${formatNumber(projection.usableDays, 0)} días de cobertura${dateText}`;
+    } else if (item.stockState === "have" && item.stockQuantity == null) {
+      durationLabel.textContent = "Disponible en casa · cantidad sin indicar";
     } else {
       durationLabel.textContent = item.monthlyQty == null ? "Falta definir la recomendación" : "Sin compra registrada";
     }
 
-    const toggle = $(".purchase-toggle", card);
-    toggle.setAttribute("aria-pressed", String(item.purchaseStatus === "purchased"));
-    toggle.setAttribute("aria-label", item.purchaseStatus === "purchased" ? `Desmarcar ${item.name}` : `Marcar ${item.name} como comprado`);
-    toggle.addEventListener("click", () => togglePurchased(item.id));
     $(".product-open", card).addEventListener("click", () => openProductDialog(item.id));
+
+    const buyButton = $(".buy-button", card);
+    const hasPurchase = normalizedPurchased(item) > 0;
+    buyButton.textContent = hasPurchase ? item.purchaseStatus === "partial" ? "✓ Compra parcial" : "✓ Comprado" : "✓ Compré";
+    buyButton.setAttribute("aria-pressed", String(hasPurchase));
+    buyButton.setAttribute("aria-label", hasPurchase ? `Desmarcar compra de ${item.name}` : `Marcar ${item.name} como comprado`);
+    buyButton.addEventListener("click", () => togglePurchased(item.id));
+
+    const onHandButton = $(".onhand-button", card);
+    const hasStock = item.stockState === "have";
+    onHandButton.textContent = hasStock ? "✓ Aún lo tengo" : "⌂ Aún lo tengo";
+    onHandButton.setAttribute("aria-pressed", String(hasStock));
+    onHandButton.setAttribute("aria-label", hasStock ? `Quitar existencia en casa de ${item.name}` : `Indicar que ${item.name} aún está en casa`);
+    onHandButton.addEventListener("click", () => toggleOnHand(item.id));
+
+    const skipButton = $(".skip-button", card);
+    const isSkipped = item.purchaseStatus === "skipped";
+    skipButton.textContent = isSkipped ? "✓ No comprar" : "No comprar en este ciclo";
+    skipButton.setAttribute("aria-pressed", String(isSkipped));
+    skipButton.addEventListener("click", () => toggleSkipped(item.id));
 
     const quantityInput = $(".actual-quantity", card);
     quantityInput.value = item.quantityPurchased || 0;
     quantityInput.setAttribute("aria-label", `Cantidad comprada de ${item.name}`);
     quantityInput.addEventListener("change", () => updateQuantity(item.id, quantityInput.value, unitSelect.value));
-    quantityInput.addEventListener("blur", () => updateQuantity(item.id, quantityInput.value, unitSelect.value));
 
     const unitSelect = $(".actual-unit", card);
     compatibleUnits(item.unit).forEach((unit) => {
@@ -372,19 +586,28 @@
 
     $(".quantity-decrease", card).addEventListener("click", () => stepQuantity(item.id, -1));
     $(".quantity-increase", card).addEventListener("click", () => stepQuantity(item.id, 1));
-    $(".fill-recommended-button", card).addEventListener("click", () => fillRecommended(item.id));
 
     const status = $(".product-status", card);
+    const advice = calculatePurchaseAdvice(item);
     if (item.purchaseStatus === "skipped") {
       status.textContent = "Excluido de esta compra. Puedes reactivarlo desde los detalles.";
       status.classList.add("warning");
-    } else if (projection.shelfLimited) {
-      status.textContent = `Conviene dividir la compra: conservación estimada de ${formatNumber(item.shelfLifeDays, 0)} días.`;
-      status.classList.add("warning");
-    } else if (item.purchaseStatus === "partial") {
-      status.textContent = "Compra parcial frente a la cantidad recomendada para este ciclo.";
-      status.classList.add("partial");
+    } else if (advice.message) {
+      const message = document.createElement("span");
+      message.textContent = advice.message;
+      status.append(message);
+      status.classList.add(advice.level === "info" ? "partial" : advice.level);
+      if (["danger", "warning"].includes(advice.level) && advice.needed != null) {
+        const safeButton = document.createElement("button");
+        safeButton.type = "button";
+        safeButton.className = "status-action";
+        safeButton.textContent = advice.needed > 0 ? `Usar ${formatQuantity(advice.needed, item.unit)}` : "No comprar ahora";
+        safeButton.addEventListener("click", () => applySafeQuantity(item.id));
+        status.append(safeButton);
+      }
     }
+    const quantityDetails = $(".quantity-details", card);
+    quantityDetails.open = item.purchaseStatus === "partial" || ["danger", "warning"].includes(advice.level);
     return fragment;
   }
 
@@ -396,17 +619,19 @@
 
   function renderSummary() {
     const eligible = state.items.filter(includedBySettings);
-    const skipped = eligible.filter((item) => item.purchaseStatus === "skipped").length;
     const planned = eligible.filter((item) => item.purchaseStatus !== "skipped");
     const purchased = planned.filter((item) => item.purchaseStatus === "purchased").length;
+    const onhand = planned.filter((item) => item.stockState === "have").length;
+    const coveredAtHome = planned.filter((item) => item.purchaseStatus === "onhand").length;
     const partial = planned.filter((item) => item.purchaseStatus === "partial").length;
     const pending = planned.filter((item) => item.purchaseStatus === "pending").length;
-    const progress = planned.length ? Math.round((purchased + partial * 0.5) / planned.length * 100) : 0;
-    $("#summary-purchased").textContent = purchased;
+    const alerts = planned.filter((item) => ["danger", "warning"].includes(calculatePurchaseAdvice(item).level)).length;
+    const progress = planned.length ? Math.round((purchased + coveredAtHome) / planned.length * 100) : 0;
+    $("#summary-bought").textContent = purchased;
+    $("#summary-onhand").textContent = onhand;
+    $("#summary-alerts").textContent = alerts;
     $("#summary-total").textContent = planned.length;
-    $("#summary-pending").textContent = pending;
-    $("#summary-partial").textContent = partial;
-    $("#summary-skipped").textContent = skipped;
+    $("#summary-pending").textContent = pending + partial;
     $("#summary-coverage").textContent = `${progress}%`;
     $("#shopping-progress").setAttribute("aria-valuenow", progress);
     $("#shopping-progress-value").style.width = `${progress}%`;
@@ -467,10 +692,249 @@
     updateLastSavedLabel();
   }
 
+  function invoiceItems() {
+    return state.items.filter((item) => item.purchaseCycleId === state.settings.cycleId && normalizedPurchased(item) > 0);
+  }
+
+  function invoiceRealTotal() {
+    return invoiceItems().reduce((total, item) => total + (item.actualLineTotal == null ? 0 : Number(item.actualLineTotal)), 0);
+  }
+
+  function projectedBudget() {
+    let total = 0;
+    let priced = 0;
+    let missing = 0;
+    state.items.filter(includedBySettings).forEach((item) => {
+      if (item.purchaseStatus === "skipped") return;
+      const quantity = recommendedForCurrentPlan(item);
+      if (quantity == null || quantity <= 0) return;
+      if (item.lastUnitPrice == null) {
+        missing += 1;
+        return;
+      }
+      total += quantity * Number(item.lastUnitPrice);
+      priced += 1;
+    });
+    return { total, priced, missing };
+  }
+
+  function updateInvoiceSummary() {
+    const items = invoiceItems();
+    const total = invoiceRealTotal();
+    const reviewed = items.filter((item) => item.receiptReviewed).length;
+    const projected = projectedBudget();
+    const linesWithoutTotal = items.filter((item) => item.actualLineTotal == null).length;
+    $("#invoice-real-label").textContent = linesWithoutTotal ? "Subtotal registrado" : "Gasto real";
+    $("#invoice-real-total").textContent = formatMoney(total);
+    $("#invoice-reviewed-count").textContent = `${reviewed} de ${items.length}`;
+    $("#invoice-projected-total").textContent = formatMoney(projected.total);
+    $("#invoice-missing-prices").textContent = projected.missing;
+
+    const difference = $("#receipt-difference");
+    difference.className = "receipt-difference";
+    const reported = state.currentReceipt.reportedTotal;
+    if (reported == null) {
+      difference.textContent = linesWithoutTotal
+        ? `Agrega el total impreso. Faltan precios en ${linesWithoutTotal} línea${linesWithoutTotal === 1 ? "" : "s"}.`
+        : "Agrega el total impreso para comparar.";
+      return;
+    }
+    const delta = Number(reported) - total;
+    if (Math.abs(delta) < 0.01 && linesWithoutTotal === 0) {
+      difference.textContent = "✓ El total de las líneas coincide con la factura.";
+      difference.classList.add("safe");
+    } else if (delta >= 0) {
+      difference.textContent = `Faltan ${formatMoney(delta)} por asignar${linesWithoutTotal ? ` en ${linesWithoutTotal} línea${linesWithoutTotal === 1 ? "" : "s"}` : ""}.`;
+      difference.classList.add("warning");
+    } else {
+      difference.textContent = `Las líneas superan el total impreso por ${formatMoney(Math.abs(delta))}. Revisa cantidades y precios.`;
+      difference.classList.add("danger");
+    }
+  }
+
+  function updateInvoiceItemCalculation(card, item) {
+    const purchased = normalizedPurchased(item);
+    const unitPrice = purchased > 0 && item.actualLineTotal != null
+      ? Number(item.actualLineTotal) / purchased
+      : item.lastUnitPrice;
+    const nextQuantity = recommendedForCurrentPlan(item);
+    $(".invoice-unit-price", card).textContent = unitPrice == null
+      ? "Precio unitario: por calcular"
+      : `Precio estimado: ${formatMoney(unitPrice)} por ${item.unit}`;
+    $(".invoice-next-estimate", card).textContent = unitPrice == null || nextQuantity == null
+      ? "Próxima compra: falta precio o cantidad"
+      : `Próxima compra: ${formatMoney(unitPrice * nextQuantity)} para ${formatQuantity(nextQuantity, item.unit)}`;
+    $(".invoice-item-status", card).textContent = item.receiptReviewed
+      ? "Revisado y guardado"
+      : item.actualLineTotal == null ? "Falta el total pagado" : "Pendiente de marcar como revisado";
+    card.classList.toggle("is-reviewed", item.receiptReviewed);
+  }
+
+  function createInvoiceItem(item) {
+    const fragment = $("#invoice-item-template").content.cloneNode(true);
+    const card = $(".invoice-item", fragment);
+    const title = $(".invoice-item-title", card);
+    const quantityInput = $(".invoice-item-quantity", card);
+    const unitSelect = $(".invoice-item-unit", card);
+    const totalInput = $(".invoice-item-total", card);
+    const reviewedInput = $(".invoice-item-reviewed", card);
+    const nameInput = $(".invoice-item-name", card);
+    const brandInput = $(".invoice-item-brand", card);
+    const receiptLabelInput = $(".invoice-item-receipt-label", card);
+
+    title.textContent = item.name;
+    quantityInput.value = item.quantityPurchased || 0;
+    fillUnitSelect(unitSelect, item.actualUnit || item.unit);
+    unitSelect.value = compatibleUnits(item.unit).includes(item.actualUnit) ? item.actualUnit : item.unit;
+    unitSelect.dataset.previousUnit = unitSelect.value;
+    totalInput.value = item.actualLineTotal == null ? "" : item.actualLineTotal;
+    reviewedInput.checked = Boolean(item.receiptReviewed);
+    nameInput.value = item.name;
+    brandInput.value = item.brand || "";
+    receiptLabelInput.value = item.receiptLabel || "";
+    $(".invoice-item-details", card).open = !item.receiptReviewed && Boolean(item.receiptLabel || item.brand);
+
+    const persist = () => {
+      item.name = nameInput.value.trim() || item.name;
+      item.brand = brandInput.value.trim();
+      item.receiptLabel = receiptLabelInput.value.trim();
+      item.actualUnit = UNIT_META[unitSelect.value] ? unitSelect.value : item.unit;
+      item.quantityPurchased = normalizeQuantityForUnit(quantityInput.value, item.actualUnit);
+      item.actualLineTotal = totalInput.value === "" ? null : Math.max(0, Number(totalInput.value) || 0);
+      item.receiptReviewed = reviewedInput.checked;
+      item.purchaseStatus = statusFromQuantity(item);
+      if (item.quantityPurchased > 0) {
+        item.purchaseCycleId = state.settings.cycleId;
+        if (!item.purchaseDate) item.purchaseDate = state.currentReceipt.date || todayISO();
+      } else {
+        item.purchaseCycleId = "";
+        item.purchaseDate = "";
+        item.actualLineTotal = null;
+        item.receiptReviewed = false;
+      }
+      const cycleItems = invoiceItems();
+      state.currentReceipt.reviewedAt = cycleItems.length > 0 && cycleItems.every((entry) => entry.receiptReviewed)
+        ? new Date().toISOString()
+        : null;
+      refreshLastUnitPrice(item);
+      title.textContent = item.name;
+      saveState();
+      updateInvoiceItemCalculation(card, item);
+      updateInvoiceSummary();
+      if (item.quantityPurchased <= 0) renderInvoice();
+    };
+
+    unitSelect.addEventListener("change", () => {
+      const previousUnit = unitSelect.dataset.previousUnit || item.actualUnit || item.unit;
+      const converted = convertQuantity(Number(quantityInput.value), previousUnit, unitSelect.value);
+      if (converted != null) quantityInput.value = Number(converted.toFixed(3));
+      unitSelect.dataset.previousUnit = unitSelect.value;
+      reviewedInput.checked = false;
+      persist();
+    });
+    quantityInput.addEventListener("change", () => {
+      reviewedInput.checked = false;
+      persist();
+    });
+    quantityInput.addEventListener("blur", () => {
+      if (Number(quantityInput.value) !== Number(item.quantityPurchased)) persist();
+    });
+    [totalInput, nameInput, brandInput, receiptLabelInput].forEach((input) => input.addEventListener("input", () => {
+      if (input === totalInput) reviewedInput.checked = false;
+      persist();
+    }));
+    reviewedInput.addEventListener("change", persist);
+    updateInvoiceItemCalculation(card, item);
+    return fragment;
+  }
+
+  async function renderReceiptPhoto() {
+    const token = ++receiptRenderToken;
+    const preview = $("#receipt-photo-preview");
+    const empty = $("#receipt-photo-empty");
+    const remove = $("#receipt-photo-remove");
+    const label = $("#receipt-photo-button-label");
+    if (receiptObjectUrl) {
+      URL.revokeObjectURL(receiptObjectUrl);
+      receiptObjectUrl = null;
+    }
+    if (!state.currentReceipt.photoKey || !window.ReceiptStorage) {
+      preview.hidden = true;
+      preview.removeAttribute("src");
+      empty.hidden = false;
+      remove.hidden = true;
+      label.textContent = "Tomar foto o subir factura";
+      return;
+    }
+    try {
+      const blob = await window.ReceiptStorage.getImage(state.currentReceipt.photoKey);
+      if (token !== receiptRenderToken) return;
+      if (!blob) throw new Error("La foto guardada ya no está disponible.");
+      receiptObjectUrl = URL.createObjectURL(blob);
+      preview.src = receiptObjectUrl;
+      preview.hidden = false;
+      empty.hidden = true;
+      remove.hidden = false;
+      label.textContent = "Reemplazar foto";
+    } catch (error) {
+      console.warn(error);
+      preview.hidden = true;
+      empty.hidden = false;
+      remove.hidden = true;
+      label.textContent = "Tomar foto o subir factura";
+    }
+  }
+
+  async function saveReceiptPhoto(file) {
+    if (!file || !window.ReceiptStorage) return;
+    try {
+      await window.ReceiptStorage.saveImage(state.settings.cycleId, file);
+      state.currentReceipt.photoKey = state.settings.cycleId;
+      saveState();
+      await renderReceiptPhoto();
+      showToast("Foto guardada solo en este teléfono.");
+    } catch (error) {
+      showToast(error.message || "No se pudo guardar la foto.");
+    } finally {
+      $("#receipt-photo-input").value = "";
+    }
+  }
+
+  async function removeReceiptPhoto() {
+    const key = state.currentReceipt.photoKey;
+    if (key && window.ReceiptStorage) {
+      try {
+        await window.ReceiptStorage.deleteImage(key);
+      } catch (error) {
+        showToast(error.message || "No se pudo quitar la foto.");
+        return;
+      }
+    }
+    state.currentReceipt.photoKey = null;
+    saveState();
+    await renderReceiptPhoto();
+    showToast("Foto eliminada de este teléfono.");
+  }
+
+  function renderInvoice() {
+    const items = invoiceItems();
+    const list = $("#invoice-list");
+    list.innerHTML = "";
+    items.forEach((item) => list.append(createInvoiceItem(item)));
+    $("#invoice-empty").hidden = items.length > 0;
+    $("#receipt-store").value = state.currentReceipt.store || "";
+    $("#receipt-date").value = state.currentReceipt.date || todayISO();
+    $("#receipt-number").value = state.currentReceipt.invoiceNumber || "";
+    $("#receipt-reported-total").value = state.currentReceipt.reportedTotal == null ? "" : state.currentReceipt.reportedTotal;
+    updateInvoiceSummary();
+    void renderReceiptPhoto();
+  }
+
   function renderAll() {
     populateCategoryFilter();
     renderShoppingList();
     renderReplenishment();
+    renderInvoice();
     renderSettings();
   }
 
@@ -481,10 +945,13 @@
   function togglePurchased(id) {
     const item = findItem(id);
     if (!item) return;
-    if (item.purchaseStatus === "purchased") {
-      item.purchaseStatus = "pending";
+    if (normalizedPurchased(item) > 0) {
       item.quantityPurchased = 0;
       item.purchaseDate = "";
+      item.purchaseCycleId = "";
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+      item.purchaseStatus = statusFromQuantity(item);
     } else {
       const recommended = recommendedForCurrentPlan(item);
       if (recommended == null) {
@@ -492,10 +959,64 @@
         showToast("Primero define la cantidad recomendada.");
         return;
       }
+      if (recommended <= 0) {
+        item.purchaseStatus = statusFromQuantity(item);
+        saveState({ render: true });
+        showToast("Ya tienes suficiente; no hace falta comprarlo ahora.");
+        return;
+      }
       item.quantityPurchased = Number(recommended.toFixed(3));
       item.actualUnit = item.unit;
-      item.purchaseStatus = "purchased";
       item.purchaseDate = todayISO();
+      item.purchaseCycleId = state.settings.cycleId;
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+      item.purchaseStatus = statusFromQuantity(item);
+    }
+    saveState({ render: true });
+  }
+
+  function toggleOnHand(id) {
+    const item = findItem(id);
+    if (!item) return;
+    if (item.stockState === "have") {
+      item.stockState = "unknown";
+      item.stockQuantity = null;
+      item.stockCheckedAt = "";
+      item.purchaseStatus = item.purchaseStatus === "skipped" ? "skipped" : statusFromQuantity(item);
+      showToast("Se quitó la marca “Aún lo tengo”.");
+    } else {
+      item.stockState = "have";
+      item.stockQuantity = null;
+      item.stockUnit = item.unit;
+      item.stockCheckedAt = todayISO();
+      item.quantityPurchased = 0;
+      item.actualUnit = item.unit;
+      item.purchaseDate = "";
+      item.purchaseCycleId = "";
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+      item.purchaseStatus = "onhand";
+      showToast("Marcado como disponible en casa.");
+    }
+    saveState({ render: true });
+  }
+
+  function toggleSkipped(id) {
+    const item = findItem(id);
+    if (!item) return;
+    if (item.purchaseStatus === "skipped") {
+      item.purchaseStatus = statusFromQuantity(item);
+      showToast("Producto reactivado para este ciclo.");
+    } else {
+      item.purchaseStatus = "skipped";
+      item.quantityPurchased = 0;
+      item.actualUnit = item.unit;
+      item.purchaseDate = "";
+      item.purchaseCycleId = "";
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+      showToast("No se comprará en este ciclo.");
     }
     saveState({ render: true });
   }
@@ -506,7 +1027,16 @@
     item.actualUnit = UNIT_META[unit] ? unit : item.unit;
     item.quantityPurchased = normalizeQuantityForUnit(rawQuantity, item.actualUnit);
     if (item.purchaseStatus !== "skipped") item.purchaseStatus = statusFromQuantity(item);
-    if (item.quantityPurchased > 0 && !item.purchaseDate) item.purchaseDate = todayISO();
+    if (item.quantityPurchased > 0) {
+      if (!item.purchaseDate) item.purchaseDate = todayISO();
+      item.purchaseCycleId = state.settings.cycleId;
+    } else {
+      item.purchaseDate = "";
+      item.purchaseCycleId = "";
+      item.actualLineTotal = null;
+    }
+    item.receiptReviewed = false;
+    refreshLastUnitPrice(item);
     saveState({ render: true });
   }
 
@@ -525,7 +1055,16 @@
     item.quantityPurchased = Number(nextInBase.toFixed(3));
     item.actualUnit = item.unit;
     item.purchaseStatus = statusFromQuantity(item);
-    if (nextInBase > 0 && !item.purchaseDate) item.purchaseDate = todayISO();
+    if (nextInBase > 0) {
+      if (!item.purchaseDate) item.purchaseDate = todayISO();
+      item.purchaseCycleId = state.settings.cycleId;
+    } else {
+      item.purchaseDate = "";
+      item.purchaseCycleId = "";
+      item.actualLineTotal = null;
+    }
+    item.receiptReviewed = false;
+    refreshLastUnitPrice(item);
     saveState({ render: true });
   }
 
@@ -540,9 +1079,32 @@
     }
     item.quantityPurchased = Number(recommended.toFixed(3));
     item.actualUnit = item.unit;
-    item.purchaseStatus = "purchased";
-    item.purchaseDate = todayISO();
+    item.purchaseStatus = statusFromQuantity(item);
+    item.purchaseDate = recommended > 0 ? todayISO() : "";
+    item.purchaseCycleId = recommended > 0 ? state.settings.cycleId : "";
+    item.actualLineTotal = null;
+    item.receiptReviewed = false;
     saveState({ render: true });
+  }
+
+  function applySafeQuantity(id) {
+    const item = findItem(id);
+    if (!item) return;
+    const advice = calculatePurchaseAdvice(item);
+    const safeQuantity = advice.needed == null ? recommendedForCurrentPlan(item) : advice.needed;
+    if (safeQuantity == null) {
+      openProductDialog(id);
+      return;
+    }
+    item.quantityPurchased = Number(Math.max(0, safeQuantity).toFixed(3));
+    item.actualUnit = item.unit;
+    item.purchaseDate = safeQuantity > 0 ? todayISO() : "";
+    item.purchaseCycleId = safeQuantity > 0 ? state.settings.cycleId : "";
+    item.actualLineTotal = null;
+    item.receiptReviewed = false;
+    item.purchaseStatus = statusFromQuantity(item);
+    saveState({ render: true });
+    showToast(safeQuantity > 0 ? "Cantidad ajustada para evitar sobrecompra." : "Compra retirada: ya tienes suficiente.");
   }
 
   function fillUnitSelect(select, selected) {
@@ -570,6 +1132,9 @@
     $("#recommended-unit-input").dataset.previousUnit = item.unit;
     const purchasedInBase = convertQuantity(item.quantityPurchased || 0, item.actualUnit || item.unit, item.unit);
     $("#purchased-quantity-input").value = purchasedInBase ?? 0;
+    $("#stock-quantity-input").value = item.stockQuantity ?? "";
+    fillUnitSelect($("#stock-unit-input"), item.stockUnit || item.unit);
+    $("#stock-unit-input").dataset.previousUnit = item.stockUnit || item.unit;
     $("#purchase-date-input").value = item.purchaseDate || "";
     $("#product-status-input").value = item.purchaseStatus;
     $("#habitual-input").checked = item.planStatus !== "inactive";
@@ -584,9 +1149,15 @@
     if (!item) return;
     const referenceQty = Number($("#recommended-quantity-input").value);
     const purchasedQty = Number($("#purchased-quantity-input").value);
+    const selectedUnit = $("#recommended-unit-input").value || item.unit;
+    const stockRaw = $("#stock-quantity-input").value;
+    const stockQty = stockRaw === ""
+      ? 0
+      : convertQuantity(Number(stockRaw), $("#stock-unit-input").value || selectedUnit, selectedUnit);
     const projection = calculateProjection(item, {
       referenceQty: Number.isFinite(referenceQty) && referenceQty > 0 ? referenceQty : null,
       purchasedQty: Number.isFinite(purchasedQty) ? purchasedQty : 0,
+      stockQty: stockQty == null ? 0 : stockQty,
       purchaseDate: $("#purchase-date-input").value,
     });
     $("#dialog-duration").textContent = projection.usableDays == null ? "Sin datos suficientes" : `${formatNumber(projection.usableDays, 0)} días de cobertura`;
@@ -607,6 +1178,19 @@
     updateDialogProjection();
   }
 
+  function convertStockDialogUnit(event) {
+    const select = event.target;
+    const previousUnit = select.dataset.previousUnit || select.value;
+    const nextUnit = select.value;
+    const input = $("#stock-quantity-input");
+    if (previousUnit !== nextUnit && input.value !== "") {
+      const converted = convertQuantity(Number(input.value), previousUnit, nextUnit);
+      if (converted != null) input.value = Number(converted.toFixed(3));
+    }
+    select.dataset.previousUnit = nextUnit;
+    updateDialogProjection();
+  }
+
   function saveProductFromDialog(event) {
     event.preventDefault();
     const item = findItem($("#product-id").value);
@@ -615,27 +1199,54 @@
     const recommendedRaw = $("#recommended-quantity-input").value;
     const selectedUnit = $("#recommended-unit-input").value;
     const purchased = normalizeQuantityForUnit($("#purchased-quantity-input").value, selectedUnit);
+    const previousUnit = item.unit;
+    const stockRaw = $("#stock-quantity-input").value;
+    const stockUnit = $("#stock-unit-input").value || selectedUnit;
+    const requestedStatus = $("#product-status-input").value;
     item.name = name || item.name;
     item.brand = $("#product-brand-input").value.trim();
     item.monthlyQty = recommendedRaw === "" ? null : normalizeQuantityForUnit(recommendedRaw, selectedUnit);
     item.unit = selectedUnit;
+    if (item.lastUnitPrice != null && previousUnit !== selectedUnit) {
+      const unitsPerPrevious = convertQuantity(1, previousUnit, selectedUnit);
+      if (unitsPerPrevious) item.lastUnitPrice = item.lastUnitPrice / unitsPerPrevious;
+    }
     item.quantityPurchased = purchased;
     item.actualUnit = item.unit;
     item.purchaseDate = $("#purchase-date-input").value;
-    item.purchaseStatus = $("#product-status-input").value;
+    item.stockUnit = compatibleUnits(selectedUnit).includes(stockUnit) ? stockUnit : selectedUnit;
+    item.stockQuantity = stockRaw === "" ? null : normalizeStockQuantity(stockRaw);
+    item.stockState = requestedStatus === "onhand" || (item.stockQuantity != null && item.stockQuantity > 0)
+      ? "have"
+      : stockRaw === "" ? "unknown" : "none";
+    item.stockCheckedAt = item.stockState === "have" ? todayISO() : "";
+    item.purchaseStatus = requestedStatus;
     if (!$("#habitual-input").checked) item.planStatus = "inactive";
     else item.planStatus = $("#optional-input").checked ? "optional" : "regular";
     item.notes = $("#product-note-input").value.trim();
-    if (item.monthlyQty == null && item.purchaseStatus !== "skipped") item.purchaseStatus = "pending";
-    if (item.purchaseStatus === "purchased" && purchased <= 0) item.purchaseStatus = "pending";
-    if (item.purchaseStatus !== "skipped" && purchased > 0 && item.purchaseStatus === "pending") item.purchaseStatus = statusFromQuantity(item);
+    if (requestedStatus === "onhand" && purchased > 0) {
+      item.quantityPurchased = 0;
+      item.purchaseDate = "";
+    }
+    if (requestedStatus === "skipped") {
+      item.quantityPurchased = 0;
+      item.purchaseDate = "";
+      item.actualLineTotal = null;
+    }
+    if (item.purchaseStatus !== "skipped") item.purchaseStatus = statusFromQuantity(item);
+    if (item.monthlyQty == null && item.purchaseStatus !== "onhand") item.purchaseStatus = "pending";
+    item.purchaseCycleId = item.quantityPurchased > 0 ? state.settings.cycleId : "";
+    if (item.quantityPurchased > 0 && !item.purchaseDate) item.purchaseDate = todayISO();
+    if (item.quantityPurchased <= 0) item.actualLineTotal = null;
+    item.receiptReviewed = false;
+    refreshLastUnitPrice(item);
     saveState({ render: true });
     $("#product-dialog").close();
     showToast("Producto actualizado.");
   }
 
   function switchView(view, { updateHash = true } = {}) {
-    if (!["shopping", "replenishment", "settings"].includes(view)) view = "shopping";
+    if (!["shopping", "replenishment", "invoice", "settings"].includes(view)) view = "shopping";
     activeView = view;
     $$(".view").forEach((panel) => {
       const active = panel.dataset.view === view;
@@ -648,8 +1259,10 @@
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
+    if (view === "shopping") renderShoppingList();
     if (view === "replenishment") renderReplenishment();
-    if (updateHash) history.replaceState(null, "", `#${{ shopping: "comprar", replenishment: "reposicion", settings: "ajustes" }[view]}`);
+    if (view === "invoice") renderInvoice();
+    if (updateHash) history.replaceState(null, "", `#${{ shopping: "comprar", replenishment: "reposicion", invoice: "factura", settings: "ajustes" }[view]}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -683,35 +1296,94 @@
   }
 
   function startNewCycle() {
+    const nextCycleStart = $("#new-cycle-date").value || todayISO();
     const snapshot = {
+      cycleId: state.settings.cycleId,
       endedAt: new Date().toISOString(),
       cycleStart: state.settings.cycleStart,
-      purchased: state.items.filter((item) => item.purchaseStatus === "purchased").length,
+      purchased: invoiceItems().length,
       partial: state.items.filter((item) => item.purchaseStatus === "partial").length,
+      realTotal: invoiceRealTotal(),
+      reviewed: invoiceItems().filter((item) => item.receiptReviewed).length,
+      store: state.currentReceipt.store || "",
+      receiptDate: state.currentReceipt.date || "",
+      invoiceNumber: state.currentReceipt.invoiceNumber || "",
+      reportedTotal: state.currentReceipt.reportedTotal,
     };
     state.history.push(snapshot);
     state.history = state.history.slice(-12);
-    const nextCycleStart = $("#new-cycle-date").value || todayISO();
-    const cycleStartDate = parseLocalDate(nextCycleStart);
-    const cycleEndDate = addDays(cycleStartDate, CADENCE_DAYS[state.settings.defaultCadence] || 30);
     state.items.forEach((item) => {
-      const projection = calculateProjection(item);
-      const remainsCovered = projection.replenishmentDate && projection.replenishmentDate > cycleEndDate;
-      if (remainsCovered && item.purchaseStatus !== "skipped") return;
-      item.purchaseStatus = "pending";
+      const remaining = estimateRemainingAt(item, nextCycleStart);
+      if (remaining != null && remaining > quantityTolerance(item, safeTargetQuantity(item) || 0) / 10) {
+        item.stockState = "have";
+        item.stockQuantity = Number(remaining.toFixed(3));
+        item.stockUnit = item.unit;
+        item.stockCheckedAt = nextCycleStart;
+      } else {
+        item.stockState = "unknown";
+        item.stockQuantity = null;
+        item.stockUnit = item.unit;
+        item.stockCheckedAt = "";
+      }
       item.quantityPurchased = 0;
       item.actualUnit = item.unit;
       item.purchaseDate = "";
+      item.purchaseCycleId = "";
+      item.actualLineTotal = null;
+      item.receiptReviewed = false;
+      item.purchaseStatus = statusFromQuantity(item);
     });
+    const nextCycleId = createCycleId();
     state.settings.cycleStart = nextCycleStart;
+    state.settings.cycleId = nextCycleId;
+    state.currentReceipt = {
+      cycleId: nextCycleId,
+      date: nextCycleStart,
+      store: snapshot.store,
+      invoiceNumber: "",
+      reportedTotal: null,
+      reviewedAt: null,
+      photoKey: null,
+    };
     saveState({ render: true });
     $("#new-cycle-dialog").close();
     switchView("shopping");
-    showToast("Nuevo ciclo iniciado; se conservó lo que aún tiene cobertura.");
+    showToast("Nuevo ciclo iniciado; el sobrante quedó como inventario en casa.");
+  }
+
+  function estimateRemainingAt(item, targetDateValue) {
+    const purchased = normalizedPurchased(item);
+    const stock = normalizedStock(item);
+    if (item.stockState === "have" && item.stockQuantity == null && purchased <= 0) return null;
+    const targetDate = parseLocalDate(targetDateValue);
+    if (!targetDate) return purchased + stock;
+    const stockDate = parseLocalDate(item.stockCheckedAt || state.settings.cycleStart) || targetDate;
+    if (purchased <= 0) return consumeBetween(item, stock, stockDate, targetDate);
+    const purchaseDate = parseLocalDate(item.purchaseDate || state.currentReceipt.date || state.settings.cycleStart) || targetDate;
+    const stockAtPurchase = consumeBetween(item, stock, stockDate, purchaseDate);
+    return consumeBetween(item, stockAtPurchase + purchased, purchaseDate, targetDate);
+  }
+
+  function consumeBetween(item, quantity, fromDate, toDate) {
+    if (quantity <= 0) return 0;
+    const elapsed = fromDate && toDate ? Math.max(0, Math.floor((toDate - fromDate) / 86400000)) : 0;
+    const shelfLife = Number(item.shelfLifeDays || 0);
+    if (shelfLife > 0 && elapsed >= shelfLife) return 0;
+    const daily = dailyConsumption(item);
+    if (daily == null) return quantity;
+    return Math.max(0, quantity - daily * elapsed);
   }
 
   function exportPayload() {
-    return JSON.stringify({ app: "Compras familiares", appVersion: APP_VERSION, exportedAt: new Date().toISOString(), state }, null, 2);
+    const backupState = JSON.parse(JSON.stringify(state));
+    if (backupState.currentReceipt) backupState.currentReceipt.photoKey = null;
+    return JSON.stringify({
+      app: "Compras familiares",
+      appVersion: APP_VERSION,
+      exportedAt: new Date().toISOString(),
+      photoIncluded: false,
+      state: backupState,
+    }, null, 2);
   }
 
   function openExportDialog() {
@@ -746,6 +1418,7 @@
     const incoming = parsed.state || parsed;
     if (!incoming || !Array.isArray(incoming.items)) throw new Error("El archivo no contiene una lista válida.");
     state = normalizeLoadedState(incoming);
+    state.currentReceipt.photoKey = null;
     saveState({ render: true });
   }
 
@@ -764,8 +1437,15 @@
     }
   }
 
-  function resetApplication() {
+  async function resetApplication() {
     localStorage.removeItem(STORAGE_KEY);
+    if (window.ReceiptStorage) {
+      try {
+        await window.ReceiptStorage.clearAll();
+      } catch (error) {
+        console.warn("No se pudieron limpiar las fotos locales", error);
+      }
+    }
     state = createInitialState();
     saveState({ render: true });
     $("#reset-dialog").close();
@@ -779,6 +1459,18 @@
     const online = navigator.onLine;
     pill.classList.toggle("is-offline", !online);
     text.textContent = online ? "Datos guardados en este teléfono" : "Sin conexión · la app sigue disponible";
+  }
+
+  function saveReceiptMetadata() {
+    state.currentReceipt.cycleId = state.settings.cycleId;
+    state.currentReceipt.store = $("#receipt-store").value.trim();
+    state.currentReceipt.date = $("#receipt-date").value || todayISO();
+    state.currentReceipt.invoiceNumber = $("#receipt-number").value.trim();
+    state.currentReceipt.reportedTotal = $("#receipt-reported-total").value === ""
+      ? null
+      : Math.max(0, Number($("#receipt-reported-total").value) || 0);
+    saveState();
+    updateInvoiceSummary();
   }
 
   function bindEvents() {
@@ -823,8 +1515,18 @@
       if (event.target === dialog) dialog.close();
     }));
     $("#product-form").addEventListener("submit", saveProductFromDialog);
-    ["#recommended-quantity-input", "#purchased-quantity-input", "#purchase-date-input"].forEach((selector) => $(selector).addEventListener("input", updateDialogProjection));
+    ["#recommended-quantity-input", "#purchased-quantity-input", "#stock-quantity-input", "#purchase-date-input"].forEach((selector) => $(selector).addEventListener("input", updateDialogProjection));
     $("#recommended-unit-input").addEventListener("change", convertDialogUnit);
+    $("#stock-unit-input").addEventListener("change", convertStockDialogUnit);
+
+    ["#receipt-store", "#receipt-date", "#receipt-number", "#receipt-reported-total"].forEach((selector) => {
+      $(selector).addEventListener("input", saveReceiptMetadata);
+    });
+    $("#receipt-photo-input").addEventListener("change", (event) => {
+      const file = event.target.files?.[0];
+      if (file) void saveReceiptPhoto(file);
+    });
+    $("#receipt-photo-remove").addEventListener("click", () => void removeReceiptPhoto());
 
     $("#default-cadence").addEventListener("change", (event) => {
       state.settings.defaultCadence = event.target.value;
@@ -892,12 +1594,12 @@
   }
 
   function viewFromHash() {
-    return { "#comprar": "shopping", "#reposicion": "replenishment", "#ajustes": "settings" }[location.hash] || "shopping";
+    return { "#comprar": "shopping", "#reposicion": "replenishment", "#factura": "invoice", "#ajustes": "settings" }[location.hash] || "shopping";
   }
 
   function registerServiceWorker() {
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-      navigator.serviceWorker.register("./sw.js").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
+      navigator.serviceWorker.register("./sw.js?v=2.1.1").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
     }
   }
 
