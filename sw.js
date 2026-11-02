@@ -1,12 +1,12 @@
-const CACHE_NAME = "compras-familiares-v2.1.1";
+const CACHE_NAME = "compras-familiares-v2.1.2";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=2.1.1",
-  "./data.js?v=2.1.1",
-  "./receipt-db.js?v=2.1.1",
-  "./app.js?v=2.1.1",
-  "./manifest.webmanifest?v=2.1.1",
+  "./styles.css?v=2.1.2",
+  "./data.js?v=2.1.2",
+  "./receipt-db.js?v=2.1.2",
+  "./app.js?v=2.1.2",
+  "./manifest.webmanifest?v=2.1.2",
   "./icon.svg",
   "./icon-192.png",
   "./icon-512.png",

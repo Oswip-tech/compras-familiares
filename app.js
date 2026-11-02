@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "2.1.1";
+  const APP_VERSION = "2.1.2";
   const STORAGE_KEY = "shoppingPlanner:v1";
   const SCHEMA_VERSION = 2;
 
@@ -1599,7 +1599,7 @@
 
   function registerServiceWorker() {
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-      navigator.serviceWorker.register("./sw.js?v=2.1.1").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
+      navigator.serviceWorker.register("./sw.js?v=2.1.2").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
     }
   }
 

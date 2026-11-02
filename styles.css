@@ -436,4 +436,11 @@ button:active { transform: translateY(1px); }
   .bottom-nav { background: rgb(27 41 35 / 94%); }
   .coverage-badge, .product-duration { color: #9ce2c5; }
   .section-kicker, .calculation-card strong { color: #7bd6b1; }
+  .buy-button { border-color: #5cae8c; background: #173a2d; color: #b4f0d7; }
+  .onhand-button { border-color: #6794c9; background: #18344f; color: #b8d8ff; }
+  .skip-button { color: #c5d0cb; }
+  .product-status.safe, .receipt-difference.safe { color: #b4f0d7; }
+  .product-status.partial, .product-status.amber, .product-status.warning, .receipt-difference.amber, .receipt-difference.warning { color: #ffda91; }
+  .product-status.danger, .product-status.overbuy, .receipt-difference.danger { color: #ffb8b8; }
+  .invoice-item-details > summary, .invoice-next-estimate { color: #9ce2c5; }
 }
