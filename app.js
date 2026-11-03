@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "3.0.1";
+  const APP_VERSION = "3.0.2";
   const STORAGE_KEY = "shoppingPlanner:v1";
   const SCHEMA_VERSION = 3;
   const CATALOG = window.SUPERMAXI_CATALOG || { store: { id: 741, name: "Megamaxi Wayra" }, products: {} };
@@ -39,6 +39,7 @@
 
   let state = loadState();
   let activeStatusFilter = "all";
+  const collapsedCategories = new Set();
   let activeView = "shopping";
   let installPrompt = null;
   let toastTimer = null;
@@ -653,13 +654,17 @@
       const section = $(".category-section", fragment);
       const heading = $(".category-heading", fragment);
       const productList = $(".product-list", fragment);
+      heading.setAttribute("aria-expanded", String(!collapsedCategories.has(category)));
       $(".category-icon", fragment).innerHTML = CATEGORY_META[category].icon;
       $(".category-name", fragment).textContent = CATEGORY_META[category].label;
       const pending = items.filter((item) => item.purchaseStatus === "pending" || item.purchaseStatus === "partial").length;
       $(".category-count", fragment).textContent = `${pending} pendiente${pending === 1 ? "" : "s"} · ${items.length} producto${items.length === 1 ? "" : "s"}`;
       heading.addEventListener("click", () => {
         const expanded = heading.getAttribute("aria-expanded") !== "false";
-        heading.setAttribute("aria-expanded", String(!expanded));
+        const nextExpanded = !expanded;
+        heading.setAttribute("aria-expanded", String(nextExpanded));
+        if (nextExpanded) collapsedCategories.delete(category);
+        else collapsedCategories.add(category);
       });
       items.forEach((item) => productList.append(createProductCard(item)));
       container.append(section);
@@ -1993,7 +1998,7 @@
 
   function registerServiceWorker() {
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-      navigator.serviceWorker.register("./sw.js?v=3.0.1").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
+      navigator.serviceWorker.register("./sw.js?v=3.0.2").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
     }
   }
 
