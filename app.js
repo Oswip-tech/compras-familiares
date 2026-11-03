@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "3.0.3";
+  const APP_VERSION = "3.0.4";
   const STORAGE_KEY = "shoppingPlanner:v1";
   const SCHEMA_VERSION = 3;
   const CATALOG = window.SUPERMAXI_CATALOG || { store: { id: 741, name: "Megamaxi Wayra" }, products: {} };
@@ -239,9 +239,17 @@
         ? stored.lastPaidDate
         : merged.lastPriceDate;
       const presentationIds = presentationsFor(base).map((entry) => entry.id);
-      merged.selectedPresentationId = presentationIds.includes(stored.selectedPresentationId)
-        ? stored.selectedPresentationId
-        : defaultPresentationIdFor(base);
+      const hasStoredPackChoice = stored.selectedPackCount != null && Number.isFinite(Number(stored.selectedPackCount));
+      const hasStoredPurchase = Number(stored.quantityPurchased || 0) > 0 || Number(stored.packCountPurchased || 0) > 0;
+      const usesLegacyCarrotDefault = base.id === "zanahoria"
+        && stored.selectedPresentationId === "zanahoria-standard-1"
+        && !hasStoredPackChoice
+        && !hasStoredPurchase;
+      merged.selectedPresentationId = usesLegacyCarrotDefault
+        ? defaultPresentationIdFor(base)
+        : presentationIds.includes(stored.selectedPresentationId)
+          ? stored.selectedPresentationId
+          : defaultPresentationIdFor(base);
       merged.selectedPackCount = stored.selectedPackCount == null || !Number.isFinite(Number(stored.selectedPackCount))
         ? null
         : Math.max(0, Number(stored.selectedPackCount));
@@ -1998,7 +2006,7 @@
 
   function registerServiceWorker() {
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-      navigator.serviceWorker.register("./sw.js?v=3.0.3").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
+      navigator.serviceWorker.register("./sw.js?v=3.0.4").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
     }
   }
 

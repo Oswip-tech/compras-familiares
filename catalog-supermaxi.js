@@ -7,7 +7,8 @@
   const STORE = Object.freeze({ id: 741, name: "Megamaxi Wayra", city: "Cuenca" });
   const SNAPSHOT_DATE = "2026-11-02";
 
-  const p = (label, packQty, packUnit, variableWeight = false) => ({
+  const p = (label, packQty, packUnit, variableWeight = false, id = "") => ({
+    id,
     label,
     packQty,
     packUnit,
@@ -67,7 +68,10 @@
     yuca: [p("Venta por peso", 1, "kg", true)],
     "tomate-rinon": [p("Venta por peso", 1, "kg", true)],
     "cebolla-paitena": [p("Venta por peso", 1, "kg", true)],
-    zanahoria: [p("Venta por peso", 1, "kg", true)],
+    zanahoria: [
+      p("Funda 800 g", 0.8, "kg", false, "zanahoria-standard-800g"),
+      p("Venta por peso", 1, "kg", true, "zanahoria-standard-1"),
+    ],
     pimiento: [p("Venta por peso", 1, "kg", true)],
     ajo: [p("Venta por peso", 1, "kg", true), p("Malla 250 g", 0.25, "kg")],
     brocoli: [p("Unidad", 1, "unidades")],
@@ -449,7 +453,7 @@
     }
 
     const presentations = standards.map((standard, index) => ({
-      id: `${item.id}-standard-${index + 1}`,
+      id: standard.id || `${item.id}-standard-${index + 1}`,
       label: standard.label,
       brand: "",
       packQty: standard.packQty,

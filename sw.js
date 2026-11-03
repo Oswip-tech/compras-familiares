@@ -1,13 +1,13 @@
-const CACHE_NAME = "compras-familiares-v3.0.3";
+const CACHE_NAME = "compras-familiares-v3.0.4";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=3.0.3",
-  "./data.js?v=3.0.3",
-  "./catalog-supermaxi.js?v=3.0.3",
-  "./receipt-db.js?v=3.0.3",
-  "./app.js?v=3.0.3",
-  "./manifest.webmanifest?v=3.0.3",
+  "./styles.css?v=3.0.4",
+  "./data.js?v=3.0.4",
+  "./catalog-supermaxi.js?v=3.0.4",
+  "./receipt-db.js?v=3.0.4",
+  "./app.js?v=3.0.4",
+  "./manifest.webmanifest?v=3.0.4",
   "./icon.svg",
   "./icon-192.png",
   "./icon-512.png",
