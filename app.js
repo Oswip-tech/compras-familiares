@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "3.0.2";
+  const APP_VERSION = "3.0.3";
   const STORAGE_KEY = "shoppingPlanner:v1";
   const SCHEMA_VERSION = 3;
   const CATALOG = window.SUPERMAXI_CATALOG || { store: { id: 741, name: "Megamaxi Wayra" }, products: {} };
@@ -1998,7 +1998,7 @@
 
   function registerServiceWorker() {
     if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-      navigator.serviceWorker.register("./sw.js?v=3.0.2").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
+      navigator.serviceWorker.register("./sw.js?v=3.0.3").catch((error) => console.warn("No se pudo registrar el modo sin conexión", error));
     }
   }
 

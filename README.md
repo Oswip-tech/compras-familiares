@@ -12,7 +12,7 @@ Sitio esperado: <https://oswip-tech.github.io/compras-familiares/>
 - Lista completa agrupada por despensa, proteínas y lácteos, frutas y verduras,
   lavandería, limpieza e higiene personal.
 - Cantidad recomendada por ciclo semanal, quincenal o mensual.
-- 188 presentaciones seleccionables para los 101 productos, con una presentación
+- 190 presentaciones seleccionables para los 102 productos, con una presentación
   estándar sugerida y control visible de cantidad.
 - Snapshot oficial fechado de precios verificados en Megamaxi Wayra (`local=741`). Los
   productos no verificados se muestran como **precio por confirmar**: la app no inventa

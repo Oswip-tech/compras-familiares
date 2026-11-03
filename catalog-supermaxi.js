@@ -73,6 +73,7 @@
     brocoli: [p("Unidad", 1, "unidades")],
     coliflor: [p("Unidad", 1, "unidades")],
     lechuga: [p("Unidad", 1, "unidades")],
+    apio: [p("Atado o funda 750 g", 0.75, "kg"), p("Venta por peso", 1, "kg", true)],
     espinaca: [p("Paquete", 1, "paquetes")],
     acelga: [p("Paquete", 1, "paquetes")],
     pepino: [p("Bandeja", 1, "bandejas")],
